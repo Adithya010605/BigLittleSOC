@@ -24,7 +24,37 @@ single dedicated test.
 
 ## 2. Test matrix
 
-_(populated M1–M7)_
+### 2.1 Unit level (`make unit`)
+
+Every harness pairs directed corner cases with randomised vectors checked
+against a reference model written from the ISA specification rather than from
+the RTL, so that a transcription error cannot appear identically in both.
+
+| Test | Module | Features covered | Checks | Status |
+|---|---|---|---:|---|
+| `tb_alu` | `alu.sv` | all 10 operations; add/sub wraparound at the 32-bit boundary; shift by 0, 1 and 31; shift-amount masking to `b[4:0]`; SRA sign propagation vs SRL; SLT vs SLTU across sign boundaries; `cmp_eq`/`cmp_lt`/`cmp_ltu` outputs; 10k biased-random vectors | 19,091 | pass |
+| `tb_regfile` | `regfile.sv` | x0 reads zero on both ports and is never written; write/readback of all 31 writable registers; read-port independence; write-first bypass on port A, port B, and both at once; bypassed value commits to storage; write enable respected; 20k random read/write cycles against a shadow model | 40,140 | pass |
+| `tb_imm_gen` | `imm_gen.sv` | all six formats (I/S/B/U/J/Z); sign-extension boundaries; implicit zero LSB of B and J; Z is zero-extended not sign-extended; single-bit sweep across `instr[31:7]`; 50k random instruction words | 50,190 | pass |
+| `tb_lsu` | `lsu.sv` | exhaustive {size} x {offset} x {signedness}: byte enables, store-data placement, load extraction and extension, misalignment; LB/LH sign extension vs LBU/LHU zero extension; stores reconstructed through the byte enables the way a real memory would; 30k random accesses | 138,934 | pass |
+| `tb_decoder` | `decoder.sv` | every legal RV32I_Zicsr encoding field-by-field; M-extension opcodes trap; reserved funct3 values trap; shift-immediate funct7 checked while other OP-IMM immediates are not; malformed privileged encodings trap; `0x00000000`, `0xFFFFFFFF` and compressed encodings trap; Zicsr read/write side-effect rules over rs1/rd = x0; 2M random words, of which 13.0% were legal | 45,440,523 | pass |
+
+**Safety property asserted for all 2M random decoder words:** an instruction
+that asserts `illegal_instr_o` asserts no enable of any kind — no register
+write, no memory request, no control transfer, no CSR access, no privileged
+action. This is what prevents a trapping instruction from also committing a
+side effect.
+
+### 2.2 Directed integration (`make asm-tests`)
+
+_(populated M3–M5)_
+
+### 2.3 Compliance (`make riscv-tests`)
+
+_(populated M6)_
+
+### 2.4 Randomised lockstep (`make random`)
+
+_(populated M7)_
 
 ## 3. Coverage
 

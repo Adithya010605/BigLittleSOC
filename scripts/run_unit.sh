@@ -35,7 +35,10 @@ for cpp in "${HARNESSES[@]}"; do
 
   objdir="$OUT/obj_$mod"
   log="$OUT/$mod.log"
-  if ! "$VERILATOR" --cc --exe --build -j 0 -Wall \
+  # -Wno-UNUSEDPARAM: a single module legitimately consumes only part of the
+  # shared package. The whole-design lint gate is 'make lint' (scripts/lint.sh),
+  # which compiles every file together and allows no waivers at all.
+  if ! "$VERILATOR" --cc --exe --build -j 0 -Wall -Wno-UNUSEDPARAM \
         -I"$ROOT/rtl/common" \
         --Mdir "$objdir" --top-module "$mod" \
         -CFLAGS "-std=c++17 -O2 -Wall -I$ROOT/tb/unit" \
@@ -46,7 +49,7 @@ for cpp in "${HARNESSES[@]}"; do
     fail=$((fail+1)); failed_names+=("$mod:build"); continue
   fi
 
-  if "$objdir/$mod" >> "$log" 2>&1; then
+  if "$OUT/$mod" >> "$log" 2>&1; then
     n=$(grep -c '^\[PASS\]' "$log" || true)
     printf "  %-14s \033[32mPASS\033[0m  (%s checks)\n" "$mod" "${n:-0}"
     pass=$((pass+1))

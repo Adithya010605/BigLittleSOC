@@ -60,7 +60,7 @@ RVABI  := ilp32
 RVCFLAGS  := -march=$(RVARCH) -mabi=$(RVABI) -mcmodel=medany \
              -nostdlib -nostartfiles -ffreestanding -fno-builtin \
              -O2 -g -Wall -Wextra -fno-common -fomit-frame-pointer
-RVLDFLAGS := -Wl,--build-id=none -Wl,-melf32lriscv -T $(SW_DIR)/common/linker.ld
+RVLDFLAGS := -Wl,--build-id=none -T $(SW_DIR)/common/linker.ld
 
 # ---------------------------------------------------------------------------
 # RTL file lists
@@ -108,13 +108,7 @@ tools: ## Report toolchain state
 
 .PHONY: lint
 lint: ## Verilator lint over all RTL (must be warning-free)
-	@echo "==> lint: rtl/"
-	@if [ -z "$(strip $(wildcard $(RTL_ALL)))" ]; then \
-	  echo "    (no RTL yet — nothing to lint)"; \
-	else \
-	  $(VERILATOR) $(VLINT_FLAGS) --top-module e_core_top $(wildcard $(RTL_ALL)) && \
-	  echo "    lint clean"; \
-	fi
+	@$(SCRIPTS)/lint.sh
 
 # ---------------------------------------------------------------------------
 # riscv-tests checkout
