@@ -62,6 +62,13 @@ RVCFLAGS  := -march=$(RVARCH) -mabi=$(RVABI) -mcmodel=medany \
              -O2 -g -Wall -Wextra -fno-common -fomit-frame-pointer
 RVLDFLAGS := -Wl,--build-id=none -T $(SW_DIR)/common/linker.ld
 
+# libgcc supplies the software integer divide and modulo routines
+# (__udivsi3, __umodsi3, __divsi3, __modsi3). This core has no M extension by
+# design, so GCC lowers every '/' and '%' in C to a call into libgcc; linking
+# it is what makes "multiply and divide are done in software" actually work.
+# It must come last on the link line, after all objects.
+RVLIBS := -lgcc
+
 # ---------------------------------------------------------------------------
 # RTL file lists
 # ---------------------------------------------------------------------------
@@ -181,5 +188,5 @@ clean: ## Remove build products
 export ROOT RTL_DIR TB_DIR SW_DIR SCRIPTS BUILD THIRD
 export VERILATOR YOSYS PYTHON
 export RISCV_PREFIX RVCC RVOBJCOPY RVOBJDUMP RVNM
-export RVARCH RVABI RVCFLAGS RVLDFLAGS
+export RVARCH RVABI RVCFLAGS RVLDFLAGS RVLIBS
 export RTL_PKG RTL_COMMON RTL_CORE RTL_ALL VINC VSIM_FLAGS

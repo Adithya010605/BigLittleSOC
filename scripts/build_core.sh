@@ -24,9 +24,17 @@ if [ ! -f "$TOP" ]; then
   exit 0
 fi
 
-RTL=$(ls "$ROOT"/rtl/common/e_core_pkg.sv "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/e_core/*.sv 2>/dev/null | awk '!seen[$0]++')
-TBSRC=$(ls "$ROOT"/tb/integration/*.cpp 2>/dev/null)
-if [ -z "$TBSRC" ]; then
+# The package must be compiled first: every other file references its types,
+# and `ls` would sort the names rather than preserve this order.
+shopt -s nullglob
+PKG="$ROOT/rtl/common/e_core_pkg.sv"
+RTL=("$PKG")
+for f in "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/e_core/*.sv; do
+  [ "$f" = "$PKG" ] && continue
+  RTL+=("$f")
+done
+TBSRC=("$ROOT"/tb/integration/*.cpp)
+if [ ${#TBSRC[@]} -eq 0 ]; then
   echo "==> e_core: no integration testbench sources yet"
   exit 0
 fi
@@ -43,10 +51,11 @@ echo "==> building $BIN"
   -I"$ROOT/rtl/common" -I"$ROOT/rtl/e_core" \
   --Mdir "$OBJDIR" --top-module e_core_top \
   --x-assign unique --x-initial unique \
+  -GRVFI=1 \
   -CFLAGS "-std=c++17 -O2 -Wall -I$ROOT/tb/integration" \
   "${EXTRA[@]}" \
   -o "$BUILD/$BIN" \
-  $RTL $TBSRC > "$BUILD/build_core$SUFFIX.log" 2>&1 || {
+  "${RTL[@]}" "${TBSRC[@]}" > "$BUILD/build_core$SUFFIX.log" 2>&1 || {
     echo "   BUILD FAILED — see $BUILD/build_core$SUFFIX.log"
     tail -40 "$BUILD/build_core$SUFFIX.log" | sed 's/^/     /'
     exit 1

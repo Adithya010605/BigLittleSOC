@@ -12,8 +12,9 @@ SIM="$BUILD/e_core_sim"
 OUT="$BUILD/asm"
 mkdir -p "$OUT"
 
-RVCC=${RVCC:-riscv64-unknown-elf-gcc}
-RVCFLAGS=${RVCFLAGS:--march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding}
+# shellcheck source=scripts/toolchain.sh
+. "$ROOT/scripts/toolchain.sh"
+
 LDS="$ROOT/sw/common/linker.ld"
 
 shopt -s nullglob
@@ -29,7 +30,7 @@ printf "==> directed assembly tests\n"
 for src in "${TESTS[@]}"; do
   name=$(basename "$src" .S)
   elf="$OUT/$name.elf"
-  if ! "$RVCC" $RVCFLAGS -I"$ROOT/tb/asm" -T "$LDS" -o "$elf" "$src" \
+  if ! "$RVCC" $RVCFLAGS -I"$ROOT/tb/asm" -T "$LDS" -o "$elf" "$src" ${RVLIBS:--lgcc} \
         > "$OUT/$name.build.log" 2>&1; then
     printf "  %-28s \033[31mASM FAIL\033[0m\n" "$name"
     sed 's/^/      /' "$OUT/$name.build.log" | head -15

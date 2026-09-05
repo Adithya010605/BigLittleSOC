@@ -225,3 +225,157 @@ disappears on its own.
 MULTITOP note above. Of the 2M random words fed to the decoder, 259,405
 (13.0%) were legal instructions, so the sweep exercised the legal decode space
 as well as the trap path.
+
+---
+
+## 2026-09-07 — M2: single-cycle datapath and the testbench harness
+
+Built the permanent harness (`elf_loader`, `memory_model`, `disasm`,
+`tb_e_core`), the bare-metal software base (`linker.ld`, `start.S`, `crt0.c`,
+`uart.c`), the assembly-test macros, and the M2 single-cycle datapath.
+
+### Bug found: a genuine combinational loop through the register file bypass
+
+**Symptom.** Verilator reported UNOPTFLAT with the cycle
+`regfile.we_qual -> rs2_data -> br_lt -> branch_taken -> unimplemented ->
+rf_we_qual -> regfile.we_qual`.
+
+**Root cause.** `regfile.sv` implements a write-first bypass, so `rdata`
+depends combinationally on `we_i`. In the single-cycle datapath the register
+file's write port and its read ports are used by the *same* instruction, so
+`we_i` depended on whether that instruction commits, which depended on the
+branch comparator and the JALR target, which depended on `rdata`.
+
+This was not merely a lint complaint. The bypass is also *architecturally
+wrong* in a single-cycle machine: with it in place, `add x1, x1, x2` would read
+the value it is in the middle of computing rather than the old x1. Write-first
+is correct only when the writer and the reader are different instructions,
+which is exactly the situation once the pipeline exists at M3 (writer in S3,
+reader in S2).
+
+**Fix.** The M2 core commits its writeback through registers
+(`wb_we_q`/`wb_addr_q`/`wb_data_q`), so the register file's write port is
+flop-driven. The write lands in the cycle after ST_EXEC, which is always at or
+before the next instruction's own ST_EXEC, so nothing observes stale state.
+This breaks the loop and fixes the correctness problem at the same time.
+
+**Consequence for M3.** No change is needed to `regfile.sv`. The write-first
+bypass is right for the pipelined core and stays exactly as it is; it was only
+the single-cycle *usage* that was incompatible.
+
+### Bug found: two assembly checks were silently vacuous
+
+**Symptom.** `m2_basic.S` failed check 8, reporting that `sub x12, x0, x5`
+produced `0x80000000` instead of `-2047`.
+
+**Root cause.** The check macros used `t0` (= x5) as scratch to materialise the
+expected immediate. The test also held live values in x5. Check 8 compared
+against a clobbered operand — but worse, checks 4 and 20 had the form
+`CHECK_EQ x5, ...`, which expands to `li t0, val; beq x5, t0, ok`. With
+`reg == t0` that is `li x5, val` followed by comparing x5 against itself: the
+check passed unconditionally and tested nothing.
+
+**Fix.** Reserved x31 as the sole scratch register and, crucially, made the
+misuse a *build error* rather than a documented convention:
+
+```asm
+.macro _CHECK_NOT_SCRATCH reg
+  .ifc "\reg","x31"
+    .error "x31 is the macro scratch register and cannot be checked"
+  .endif
+.endm
+```
+
+A silently vacuous check is far more dangerous than a broken build, because it
+reports success for work never done. Every comparison macro now invokes the
+guard, and the guard was verified to fire by deliberately writing
+`CHECK_EQ x31, 99, 1`.
+
+### Bug found: the pass/fail verdict inverted the tohost convention
+
+The harness compared `tohost >> 1` against 1. The riscv-tests convention is
+that a *raw* tohost value of 1 means pass, and a failing check n is written as
+`(n << 1) | 1`. The shifted value is therefore the check number, not the
+verdict: comparing it against 1 called check 0 a pass and check 1 a failure.
+The harness now compares the raw word against 1 and reports `raw >> 1` as the
+identifying check number. A passing program was being reported as a failure,
+which is the benign direction, but the same error would have silently accepted
+a program that failed check 0.
+
+### Bug found: `ls` sorted the RTL file list
+
+`build_core.sh` built its file list with
+`ls rtl/common/e_core_pkg.sv rtl/common/*.sv ...`, expecting the package to come
+first. `ls` sorts its arguments, so `alu.sv` was compiled before the package
+that defines `alu_op_e`, producing eleven "reference before declaration"
+errors. Replaced with explicit array construction that puts the package first.
+`lint.sh` already did this correctly, which is why lint passed while the build
+failed.
+
+### Decision: memory response may arrive in the same cycle as the grant
+
+The valid/ready model allows `rvalid` in the same cycle as `gnt` (zero wait
+states) or arbitrarily later. Same-cycle response is what a cache *hit* looks
+like, and since the stated reason for adopting this protocol now is that the
+core drops behind a cache later without change, refusing to model it would
+defeat the purpose. `--waits=N` delays both the grant and the response by N
+cycles; `--waits=random:SEED` draws both independently per transaction, with
+the two ports given independent random streams so instruction and data latency
+vary independently.
+
+### Decision: the memory response never depends combinationally on itself
+
+The model's response is a pure function of its own state and the core's request
+signals, and the core never derives `req` from `gnt`. That contract is what
+makes a single settle-then-respond pass per simulated cycle correct, rather
+than needing to iterate to a fixed point. It is stated in both `memory_model.h`
+and the RTL header so that neither side can quietly break it.
+
+### Decision: `-lgcc` is part of the link
+
+The first C link failed with undefined `__udivsi3`/`__umodsi3`. This is the M
+extension's absence showing up exactly where it should: with no hardware
+divider, GCC lowers every `/` and `%` to a libgcc call. Linking `-lgcc` after
+the objects is what makes "multiply and divide are done in software" actually
+work. Verified with `objdump` that the resulting image contains no `mul`,
+`div` or `rem` instructions.
+
+### Decision: RVFI is wired up from M2, not deferred
+
+The RVFI trace port was implemented immediately rather than at M7, because the
+harness needs a retirement stream anyway — for `--log`, for the last-50
+instruction dump on failure, and later for lockstep. Building all of those on
+RVFI from the start means one mechanism instead of three, and the lockstep
+checker at M7 becomes a comparison against a port that is already exercised by
+every test. The port is behind `parameter RVFI` and tied off when disabled, so
+synthesis prunes it.
+
+### M2 results
+
+`m2_basic.S` — 24 checks over addi/add/sub/and/or/lw/sw/beq/jal, including
+immediate extremes, arithmetic wraparound, store/load round trips with positive
+and negative offsets, taken and not-taken branches, a backwards-branch loop,
+and JAL link-register correctness.
+
+| waits | cycles | retired |
+|---|---:|---:|
+| 0 | 221 | 106 |
+| 1 | 450 | 105 |
+| 2 | 679 | 105 |
+| 3 | 908 | 105 |
+| 5 | 1366 | 105 |
+| 8 | 2053 | 105 |
+| random:1 | 1068 | 105 |
+| random:2 | 1042 | 106 |
+| random:3 | 1003 | 105 |
+| random:99 | 1056 | 105 |
+
+The retired count differs by one between configurations because the final store
+to `tohost` ends the simulation when the write commits at grant, which at
+non-zero latency is before that instruction's own retirement is sampled. This
+affects only the harness's diagnostic counter; from M5 the reported instruction
+count comes from the core's own `minstret` CSR.
+
+Lint: clean, 0 warnings, and now with **no waivers at all** — the MULTITOP
+suppression from M1 disappeared automatically once `e_core_top.sv` gave the
+design a unique top module.

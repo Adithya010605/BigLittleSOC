@@ -10,8 +10,9 @@ SIM="$BUILD/e_core_sim"
 OUT="$BUILD/sw"
 mkdir -p "$OUT"
 
-RVCC=${RVCC:-riscv64-unknown-elf-gcc}
-RVCFLAGS=${RVCFLAGS:--march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding -O2}
+# shellcheck source=scripts/toolchain.sh
+. "$ROOT/scripts/toolchain.sh"
+
 LDS="$ROOT/sw/common/linker.ld"
 COMMON_SRC=("$ROOT"/sw/common/start.S "$ROOT"/sw/common/crt0.c "$ROOT"/sw/common/uart.c)
 
@@ -29,7 +30,7 @@ for src in "${TESTS[@]}"; do
   name=$(basename "$src" .c)
   elf="$OUT/$name.elf"
   if ! "$RVCC" $RVCFLAGS -I"$ROOT/sw/common" -T "$LDS" -o "$elf" \
-        "$src" "${COMMON_SRC[@]}" > "$OUT/$name.build.log" 2>&1; then
+        "$src" "${COMMON_SRC[@]}" ${RVLIBS:--lgcc} > "$OUT/$name.build.log" 2>&1; then
     printf "  %-20s \033[31mCC FAIL\033[0m\n" "$name"
     sed 's/^/      /' "$OUT/$name.build.log" | head -20
     fail=$((fail+1)); failed+=("$name:cc"); continue

@@ -46,7 +46,21 @@ side effect.
 
 ### 2.2 Directed integration (`make asm-tests`)
 
-_(populated M3–M5)_
+Self-checking assembly, one uniquely-numbered check per assertion so a failure
+names the exact check. Every test runs at zero wait states and at randomised
+wait states.
+
+| Test | Features covered | Checks | Status |
+|---|---|---:|---|
+| `m2_basic` | addi (immediate extremes, sign extension); add/sub with 32-bit wraparound; and/or; sw/lw round trip with positive and negative offsets and store isolation; beq taken and not taken; backwards-branch loop; jal link register; x0 stays zero when written by jal | 24 | pass |
+
+**Harness safeguard.** The comparison macros reserve x31 as scratch and reject
+it as the register under test with an assembler `.error`. An early version used
+`t0` as scratch without that guard, which made two checks compare the scratch
+register against itself and pass unconditionally; see the M2 lab notebook
+entry.
+
+_(hazard, branch, trap, CSR and interrupt tests added at M3–M5)_
 
 ### 2.3 Compliance (`make riscv-tests`)
 

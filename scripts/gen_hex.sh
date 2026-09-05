@@ -10,9 +10,10 @@ set -euo pipefail
 ELF=${1:?usage: gen_hex.sh <elf> <out-basename>}
 OUT=${2:?usage: gen_hex.sh <elf> <out-basename>}
 
-OBJCOPY=${RVOBJCOPY:-riscv64-unknown-elf-objcopy}
-OBJDUMP=${RVOBJDUMP:-riscv64-unknown-elf-objdump}
-NM=${RVNM:-riscv64-unknown-elf-nm}
+. "$(dirname "$0")/toolchain.sh"
+OBJCOPY=$RVOBJCOPY
+OBJDUMP=$RVOBJDUMP
+NM=$RVNM
 
 # Flat image: every allocatable, loadable section from the lowest LMA up.
 "$OBJCOPY" -O binary --gap-fill 0 "$ELF" "$OUT.bin"
