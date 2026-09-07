@@ -12,11 +12,12 @@ OUT="$BUILD/random"
 PYTHON=${PYTHON:-python3}
 mkdir -p "$OUT"
 
+# shellcheck source=scripts/toolchain.sh
+. "$ROOT/scripts/toolchain.sh"
+
 NPROG=${1:-${RANDOM_NPROG:-200}}
 NSEED=${2:-${RANDOM_NSEED:-3}}
 
-RVCC=${RVCC:-riscv64-unknown-elf-gcc}
-RVCFLAGS=${RVCFLAGS:--march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding}
 LDS="$ROOT/sw/common/linker.ld"
 GEN="$ROOT/scripts/gen_random_prog.py"
 
@@ -34,7 +35,7 @@ for seed_base in $(seq 1 "$NSEED"); do
     asm="$OUT/$name.S"
     elf="$OUT/$name.elf"
     "$PYTHON" "$GEN" --seed "$seed" --out "$asm" || { fail=$((fail+1)); failed+=("$name:gen"); continue; }
-    if ! "$RVCC" $RVCFLAGS -T "$LDS" -o "$elf" "$asm" > "$OUT/$name.build.log" 2>&1; then
+    if ! "$RVCC" $RVCFLAGS -T "$LDS" -o "$elf" "$asm" ${RVLIBS:--lgcc} > "$OUT/$name.build.log" 2>&1; then
       printf "  %-14s \033[31mASM FAIL\033[0m\n" "$name"
       head -15 "$OUT/$name.build.log" | sed 's/^/      /'
       fail=$((fail+1)); failed+=("$name:asm"); continue

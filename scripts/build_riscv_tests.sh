@@ -14,7 +14,9 @@ SIM="$BUILD/e_core_sim"
 OUT="$BUILD/riscv-tests"
 mkdir -p "$OUT"
 
-RVCC=${RVCC:-riscv64-unknown-elf-gcc}
+# shellcheck source=scripts/toolchain.sh
+. "$ROOT/scripts/toolchain.sh"
+
 ISA_DIR="$THIRD/riscv-tests/isa"
 ENV_DIR="$THIRD/riscv-tests/env/p"
 LDS="$ROOT/sw/common/riscv_tests.ld"
