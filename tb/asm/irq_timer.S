@@ -147,8 +147,6 @@ handler:
     csrw    mscratch, x31
     la      x31, state
 
-    /* clear whichever source is asserted */
-    sw      x0, 16(x31)             /* placeholder store, keeps x30 free */
     csrr    x30, mcause
     sw      x30, 4(x31)
     csrr    x30, mepc
@@ -169,4 +167,4 @@ handler:
 
     TEST_DATA_SECTION
 state:
-    .word   0, 0, 0, 0, 0
+    .word   0, 0, 0, 0
