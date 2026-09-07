@@ -14,8 +14,18 @@ rm -f "$OUT"/*.dat
 "$ROOT/scripts/build_core.sh" --coverage || exit 1
 [ -x "$SIM" ] || { echo "==> coverage: coverage simulator not built yet"; exit 0; }
 
+# The randomised programs matter here more than anything else: they are what
+# drives the arithmetic datapath through operand values the directed tests
+# never produce, and toggle coverage on a 32-bit datapath is otherwise
+# dominated by bits that only a wide value range exercises. A capped number of
+# them keeps the replay to a sensible runtime.
+RANDOM_CAP=${COVERAGE_RANDOM_CAP:-120}
 shopt -s nullglob
-ELFS=("$BUILD/asm"/*.elf "$BUILD/sw"/*.elf "$BUILD/riscv-tests"/*.elf)
+RAND_ELFS=("$BUILD/random"/*.elf)
+if [ ${#RAND_ELFS[@]} -gt "$RANDOM_CAP" ]; then
+  RAND_ELFS=("${RAND_ELFS[@]:0:$RANDOM_CAP}")
+fi
+ELFS=("$BUILD/asm"/*.elf "$BUILD/sw"/*.elf "$BUILD/riscv-tests"/*.elf "${RAND_ELFS[@]}")
 if [ ${#ELFS[@]} -eq 0 ]; then
   echo "==> coverage: no test ELFs built yet — run 'make asm-tests sw-tests riscv-tests' first"
   exit 0
@@ -25,7 +35,11 @@ echo "==> coverage: replaying ${#ELFS[@]} programs"
 n=0
 for elf in "${ELFS[@]}"; do
   n=$((n+1))
-  "$SIM" --elf "$elf" --waits=0 --max-cycles=20000000 \
+  # Alternate the latency configuration so the back-pressure paths -- the
+  # skid buffer, the wrong-path discard, the multi-cycle memory handshake --
+  # are covered too. At zero wait states several of them never activate.
+  if [ $((n % 3)) -eq 0 ]; then w="random:$n"; else w=0; fi
+  "$SIM" --elf "$elf" --waits="$w" --max-cycles=20000000 \
          --coverage-out="$OUT/cov_$n.dat" > /dev/null 2>&1 || true
 done
 

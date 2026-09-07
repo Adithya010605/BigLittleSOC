@@ -1,0 +1,3 @@
+fib iterative: 0 1 1 2 3 5 8 13 21 34 55 89 144 233 377 610
+fib recursive: 0 1 1 2 3 5 8 13 21 34 55 89 144 233 377 610
+fib: iterative and recursive agree up to n=20

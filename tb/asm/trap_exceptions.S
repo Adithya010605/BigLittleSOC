@@ -161,6 +161,27 @@ jalr_site:
     lw      x28, SAVED_EPC(x2)
     CHECK_EQ_REG x28, x24, 30
 
+    /* ---- 31..33: instruction access fault, cause 1 ---------------------- */
+    /* Jump into unmapped memory. The fetch itself faults, so mepc is the
+       faulting PC -- the target, not the jump -- and returning to it would
+       fault again forever. The handler recognises cause 1 and redirects mepc
+       to `recovered` instead of stepping over the instruction. */
+    li      x9, 0x40000000
+    jalr    x10, 0(x9)
+    CHECK_UNREACHABLE 31
+recovered:
+    la      x2, saved
+    lw      x11, SAVED_CAUSE(x2)
+    CHECK_EQ x11, 1, 32
+    lw      x12, SAVED_TVAL(x2)
+    li      x13, 0x40000000
+    CHECK_EQ_REG x12, x13, 33
+
+    /* the core must keep executing normally afterwards */
+    li      x14, 0x1234
+    addi    x15, x14, 1
+    CHECK_EQ x15, 0x1235, 34
+
     TEST_PASS
 
 misaligned_target:
@@ -187,8 +208,27 @@ handler:
     lw      x30, SAVED_COUNT(x31)
     addi    x30, x30, 1
     sw      x30, SAVED_COUNT(x31)
+
+    /* An instruction access fault (cause 1) points mepc at the unmapped
+       address that could not be fetched. Stepping over it by four would land
+       in unmapped memory again, so recovery has to redirect somewhere real. */
+    /* Compared by decrementing rather than with a second scratch register:
+       the handler may only touch x31 (saved in mscratch) and x30, since the
+       main flow keeps live values in everything else -- an earlier version
+       borrowed x29 and silently broke the misaligned-store check that was
+       holding an address there. */
+    csrr    x30, mcause
+    addi    x30, x30, -1
+    beq     x30, x0, handler_instr_fault
+
     csrr    x30, mepc
     addi    x30, x30, 4
+    csrw    mepc, x30
+    csrr    x31, mscratch
+    mret
+
+handler_instr_fault:
+    la      x30, recovered
     csrw    mepc, x30
     csrr    x31, mscratch
     mret

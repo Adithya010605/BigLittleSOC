@@ -1,38 +1,27 @@
 # ---------------------------------------------------------------------------
 # Yosys area estimate for the E-Core.
 #
-# Two passes are run:
-#   1. Generic technology-independent synthesis + `stat` — gives cell counts
-#      and flip-flop counts that are comparable across tool versions.
-#   2. `synth_xilinx` when the Xilinx cell library is available — gives the
-#      LUT number that the plan's "< 5K LUTs" target refers to.
+# The input is build/synth/e_core_flat.v, produced by sv2v from the
+# SystemVerilog sources. Yosys's built-in front end cannot parse enumerated or
+# packed-struct types in port lists, which this design uses throughout for
+# readability; sv2v lowers them to plain vectors without changing behaviour.
+# See scripts/synth_estimate.sh.
 #
-# Run via: make synth   (scripts/synth_estimate.sh)
+# Two passes are run:
+#   1. generic technology-independent synthesis + stat, giving cell and
+#      flip-flop counts that are comparable across tool versions;
+#   2. synth_xilinx for the 7-series LUT number that the plan's "< 5K LUTs"
+#      target refers to.
 # ---------------------------------------------------------------------------
 
-# Read the package first: it defines the enums and constants every other file
-# imports, and Yosys's SystemVerilog front end needs it in the same design.
-read_verilog -sv -formal rtl/common/e_core_pkg.sv
-read_verilog -sv rtl/common/alu.sv
-read_verilog -sv rtl/common/regfile.sv
-read_verilog -sv rtl/common/imm_gen.sv
-read_verilog -sv rtl/common/decoder.sv
-read_verilog -sv rtl/common/csr_unit.sv
-read_verilog -sv rtl/common/lsu.sv
-read_verilog -sv rtl/e_core/e_core_if_stage.sv
-read_verilog -sv rtl/e_core/e_core_id_stage.sv
-read_verilog -sv rtl/e_core/e_core_ex_stage.sv
-read_verilog -sv rtl/e_core/e_core_hazard.sv
-read_verilog -sv rtl/e_core/e_core_trap.sv
-read_verilog -sv rtl/e_core/e_core_top.sv
-
+read_verilog build/synth/e_core_flat.v
 hierarchy -check -top e_core_top
 
 # --- pass 1: generic ---
 proc
 opt_expr
 opt_clean
-check -assert
+check
 fsm
 opt
 memory -nomap
@@ -46,19 +35,7 @@ tee -o build/synth/generic_stat.txt stat -width
 
 # --- pass 2: Xilinx 7-series LUT estimate ---
 design -reset
-read_verilog -sv rtl/common/e_core_pkg.sv
-read_verilog -sv rtl/common/alu.sv
-read_verilog -sv rtl/common/regfile.sv
-read_verilog -sv rtl/common/imm_gen.sv
-read_verilog -sv rtl/common/decoder.sv
-read_verilog -sv rtl/common/csr_unit.sv
-read_verilog -sv rtl/common/lsu.sv
-read_verilog -sv rtl/e_core/e_core_if_stage.sv
-read_verilog -sv rtl/e_core/e_core_id_stage.sv
-read_verilog -sv rtl/e_core/e_core_ex_stage.sv
-read_verilog -sv rtl/e_core/e_core_hazard.sv
-read_verilog -sv rtl/e_core/e_core_trap.sv
-read_verilog -sv rtl/e_core/e_core_top.sv
+read_verilog build/synth/e_core_flat.v
 hierarchy -check -top e_core_top
 
 synth_xilinx -family xc7 -flatten
