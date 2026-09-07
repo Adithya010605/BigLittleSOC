@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Yosys area estimate for the E-Core.
+#
+# Two passes are run:
+#   1. Generic technology-independent synthesis + `stat` — gives cell counts
+#      and flip-flop counts that are comparable across tool versions.
+#   2. `synth_xilinx` when the Xilinx cell library is available — gives the
+#      LUT number that the plan's "< 5K LUTs" target refers to.
+#
+# Run via: make synth   (scripts/synth_estimate.sh)
+# ---------------------------------------------------------------------------
+
+# Read the package first: it defines the enums and constants every other file
+# imports, and Yosys's SystemVerilog front end needs it in the same design.
+read_verilog -sv -formal rtl/common/e_core_pkg.sv
+read_verilog -sv rtl/common/alu.sv
+read_verilog -sv rtl/common/regfile.sv
+read_verilog -sv rtl/common/imm_gen.sv
+read_verilog -sv rtl/common/decoder.sv
+read_verilog -sv rtl/common/csr_unit.sv
+read_verilog -sv rtl/common/lsu.sv
+read_verilog -sv rtl/e_core/e_core_if_stage.sv
+read_verilog -sv rtl/e_core/e_core_id_stage.sv
+read_verilog -sv rtl/e_core/e_core_ex_stage.sv
+read_verilog -sv rtl/e_core/e_core_hazard.sv
+read_verilog -sv rtl/e_core/e_core_trap.sv
+read_verilog -sv rtl/e_core/e_core_top.sv
+
+hierarchy -check -top e_core_top
+
+# --- pass 1: generic ---
+proc
+opt_expr
+opt_clean
+check -assert
+fsm
+opt
+memory -nomap
+opt_clean
+techmap
+opt -fast
+abc -g cmos2,NAND,NOR,AOI3,OAI3,AOI4,OAI4
+opt_clean
+
+tee -o build/synth/generic_stat.txt stat -width
+
+# --- pass 2: Xilinx 7-series LUT estimate ---
+design -reset
+read_verilog -sv rtl/common/e_core_pkg.sv
+read_verilog -sv rtl/common/alu.sv
+read_verilog -sv rtl/common/regfile.sv
+read_verilog -sv rtl/common/imm_gen.sv
+read_verilog -sv rtl/common/decoder.sv
+read_verilog -sv rtl/common/csr_unit.sv
+read_verilog -sv rtl/common/lsu.sv
+read_verilog -sv rtl/e_core/e_core_if_stage.sv
+read_verilog -sv rtl/e_core/e_core_id_stage.sv
+read_verilog -sv rtl/e_core/e_core_ex_stage.sv
+read_verilog -sv rtl/e_core/e_core_hazard.sv
+read_verilog -sv rtl/e_core/e_core_trap.sv
+read_verilog -sv rtl/e_core/e_core_top.sv
+hierarchy -check -top e_core_top
+
+synth_xilinx -family xc7 -flatten
+
+tee -o build/synth/xilinx_stat.txt stat -width

@@ -1,0 +1,21 @@
+# Build products
+build/
+obj_dir/
+*.o
+*.d
+*.a
+
+# Simulator / waveform output
+*.vcd
+*.fst
+*.dat
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+.vscode/
+.idea/
+
+# External checkout — fetched by `make riscv-tests-fetch`, not vendored
+third_party/riscv-tests/
