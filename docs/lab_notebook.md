@@ -379,3 +379,109 @@ count comes from the core's own `minstret` CSR.
 Lint: clean, 0 warnings, and now with **no waivers at all** — the MULTITOP
 suppression from M1 disappeared automatically once `e_core_top.sv` gave the
 design a unique top module.
+
+---
+
+## 2026-09-07 — M3: the three-stage pipeline
+
+Replaced the M2 sequencer with `e_core_if_stage`, `e_core_id_stage`,
+`e_core_ex_stage` and `e_core_hazard`, and rewrote `e_core_top` as pure wiring.
+`regfile.sv` needed no change: the write-first bypass that was wrong for a
+single-cycle datapath is exactly right once the writer (S3) and the reader (S2)
+are different instructions.
+
+`m2_basic` dropped from 221 cycles to 142 for the same 106 instructions.
+
+### Decision: the IF stage needs a skid buffer to reach 1 IPC
+
+The obvious fetch rule — do not issue a request until IF/ID is empty — is
+correct but caps throughput at 0.5 IPC even with a zero-latency memory, because
+a response cannot arrive before the cycle after the request, so IF/ID is
+refilled only every other cycle. I traced this out cycle by cycle before
+writing the code and it is not subtle: fetch, deliver, wait for ID to consume,
+fetch again.
+
+The fix is a single-entry skid buffer. A fetch is issued whenever the skid is
+free, and a response that finds IF/ID occupied waits in the skid until IF/ID
+drains. At most one request is in flight and at most one instruction is
+buffered, so the storage cost is one 32-bit register plus a valid bit, and the
+core runs at 1 IPC on straight-line code with a zero-wait-state memory.
+
+### Decision: the fetch address is a separate register from the PC
+
+`instr_addr_o` must hold still from the cycle a request is asserted until it is
+granted. A branch resolving in ID can redirect the PC inside that window, so
+driving `instr_addr_o` from the PC would change the address of a request the
+memory had already seen — a protocol violation that a real slave would be
+entitled to mishandle.
+
+`fetch_addr_q` therefore holds the address of the request actually in flight
+and `pc_q` holds the address to fetch next. A redirect changes `pc_q` only; the
+outstanding request keeps presenting the address the memory saw, and its
+wrong-path response is consumed and discarded via `discard_q`. Dropping `req`
+before `gnt` would have been simpler but is exactly the protocol violation the
+separate register avoids.
+
+### Finding: the forward muxes and the write-first register file are redundant
+
+This came out of mutation testing rather than review. Disabling the S3->S2
+forward muxes changes nothing observable, and so does disabling the register
+file's write-first bypass — because both are qualified by the same `rf_we_o`
+and both carry the same `rf_wdata`, they deliver the identical value in the
+identical cycle. Only removing both breaks the design.
+
+The specification asks for both, and both are implemented, so this is recorded
+rather than resolved. It does mean the forward muxes cost area without buying
+correctness in the current configuration; their value is that they remain
+correct if the register file is ever changed to a bypass-free memory macro,
+which is the likely direction if this core is retargeted to an ASIC flow.
+
+### Finding: the load-use interlock is not required for correctness here
+
+Also from mutation testing. Removing the load-use stall entirely leaves every
+test passing. The reason is timing: `ex_ready_o` implies `data_rvalid_i`, so by
+the cycle a load retires its data is already valid, `rf_we_o` is already
+asserted, and the write-first register file hands the value to S2 in that same
+cycle. The dependent instruction never needs to wait.
+
+The interlock is kept because it is what the specification asks for and because
+it is the only thing that would keep memory read data out of the S2 operand
+path if the register file bypass were removed. It costs one cycle per load-use
+pair. This is worth flagging to review: the current design pays the CPI of
+stalling AND carries the long path through the bypass, and a coherent
+alternative would drop one or the other. See the M4 report.
+
+### Decision: the hazard unit takes individual control bits, not `ctrl_t`
+
+Passing the whole decoded bundle tripped UNUSEDSIGNAL, since only four of its
+twenty fields affect hazard resolution. Rather than waive the warning, the
+ports were narrowed to `idex_rf_we_i`, `idex_mem_req_i`, `idex_mem_we_i` and
+`idex_csr_en_i`. The dependency is now explicit in the port list: adding a
+control signal cannot silently change stall behaviour, and a reader can see at
+a glance what this unit reacts to.
+
+### Decision: the EX stage exports its captured operands
+
+The first version of the RVFI assembly reached into `u_ex_stage.rs1_q` with
+hierarchical references. That works in Verilator and is poor practice in
+synthesizable RTL, so the ID/EX register now carries `rs1_addr`/`rs2_addr` and
+exports them alongside the captured data. The trace port reports the values the
+instruction actually executed with, already forwarded if forwarding took place.
+
+### M3 results
+
+Eight directed assembly tests, 200 checks total, all passing at zero wait
+states:
+
+| Test | Checks | Cycles | Retired | CPI |
+|---|---:|---:|---:|---:|
+| m2_basic | 24 | 142 | 106 | 1.34 |
+| hazard_raw | 13 | 106 | 89 | 1.19 |
+| hazard_load_use | 11 | 103 | 82 | 1.26 |
+| branch_basic | 26 | 196 | 146 | 1.34 |
+| branch_hazard | 14 | 86 | 67 | 1.28 |
+| jump_link | 18 | 98 | 70 | 1.40 |
+| mem_align | 31 | 209 | 170 | 1.23 |
+| x0_writes | 21 | 98 | 74 | 1.32 |
+
+Lint clean, 0 warnings, no waivers.

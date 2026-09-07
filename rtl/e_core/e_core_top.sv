@@ -1,37 +1,33 @@
 // ============================================================================
 // e_core_top.sv
 //
-// E-Core: RV32I_Zicsr, machine mode.
+// E-Core: RV32I_Zicsr, machine mode, three-stage in-order pipeline.
+//
+//   S1  IF       PC, instruction fetch, skid buffer, redirect mux
+//   S2  ID/RF    decode, register read, immediate, forwarding, branch
+//                resolution
+//   S3  EX/MEM/WB  ALU, data memory, load align/extend, register writeback
+//
+// Pipeline registers: IF/ID (inside e_core_if_stage) and ID/EX (inside
+// e_core_ex_stage). Each carries a valid bit; a flush clears it.
+//
+// All stall, flush and forwarding decisions are made in e_core_hazard.sv.
+// This module is wiring: it contains no control logic of its own beyond the
+// RVFI trace assembly.
 //
 // ---------------------------------------------------------------------------
-// MILESTONE M2 IMPLEMENTATION — SINGLE-CYCLE DATAPATH, NO PIPELINE REGISTERS
+// MILESTONE M3 SCOPE
 // ---------------------------------------------------------------------------
-// This is the non-pipelined datapath called for by milestone M2. Exactly one
-// instruction is in flight at a time, sequenced by a three-state machine that
-// drives the two valid/ready memory ports. Its purpose is to prove out the
-// memory protocol, the shared datapath modules and the testbench harness
-// before pipeline registers and hazard logic are introduced at M3, which is
-// when the body of this module is replaced by the IF/ID/EX stage
-// instantiations. The PORT LIST below is final and does not change at M3.
+// Implemented: the full RV32I integer instruction set, FENCE/FENCE.I as
+// architectural NOPs, EX->ID operand forwarding, load-use and CSR-use
+// interlocks, branch and jump resolution in ID with a one-cycle penalty, and
+// arbitrary-latency memory back-pressure on both ports.
 //
-// Scope of this version, stated precisely so nothing is silently missing:
-//   * implemented: the full RV32I integer instruction set (LUI, AUIPC, JAL,
-//     JALR, all branches, all loads and stores, all register-immediate and
-//     register-register ALU operations) and FENCE/FENCE.I as architectural
-//     NOPs;
-//   * NOT implemented in this version: Zicsr, trap entry and MRET, and
-//     interrupts. Those arrive with csr_unit.sv and e_core_trap.sv at M5.
-//     Rather than mis-executing them, an instruction this version cannot
-//     execute architecturally -- any SYSTEM instruction, or any word the
-//     decoder rejects -- stops the core in a defined HALTED state and reports
-//     itself on the RVFI trace port with rvfi_trap and rvfi_halt asserted.
-//     The core issues no further memory requests and changes no architectural
-//     state once halted. The testbench treats a halt as a test failure and
-//     prints the offending PC and instruction word.
-//
-// Memory protocol: `*_req_o` is asserted until `*_gnt_i` is seen and never
-// depends combinationally on `*_gnt_i`; `*_rvalid_i` may arrive in the same
-// cycle as the grant or arbitrarily later.
+// Not yet implemented: Zicsr, trap entry, MRET and interrupts. As at M2, an
+// instruction that cannot be executed architecturally halts the core in a
+// defined state and reports itself on the RVFI port with rvfi_trap and
+// rvfi_halt set, rather than being mis-executed. csr_unit.sv and
+// e_core_trap.sv replace that halt at M5.
 // ============================================================================
 
 module e_core_top
@@ -63,8 +59,7 @@ module e_core_top
   input  logic [31:0] data_rdata_i,
   input  logic        data_err_i,
 
-  // ---- Interrupts (taken from M5; the pins exist from M2 so the SoC-level
-  //      wiring and the timer model are stable across milestones) ----
+  // ---- Interrupts (taken from M5) ----
   input  logic        irq_timer_i,
   input  logic        irq_software_i,
   input  logic        irq_external_i,
@@ -94,403 +89,225 @@ module e_core_top
 );
 
   // --------------------------------------------------------------------
-  // Sequencer
+  // S1 <-> S2
   // --------------------------------------------------------------------
-  typedef enum logic [1:0] {
-    ST_FETCH,   // requesting and awaiting the instruction word
-    ST_EXEC,    // instruction latched: decode, execute, and for non-memory
-                // instructions retire in this same cycle
-    ST_MEM,     // load or store outstanding on the data port
-    ST_HALTED   // architecturally unimplementable instruction; see header
-  } state_e;
-
-  state_e state_q, state_d;
-
-  // Port handshake bookkeeping: `*_gnt_q` records that the in-flight request
-  // has already been accepted, so `*_req_o` drops while the response is still
-  // outstanding and a second transaction is never issued by accident.
-  logic instr_gnt_q, instr_gnt_d;
-  logic data_gnt_q,  data_gnt_d;
-
-  logic [31:0] pc_q, pc_d;
-  logic [31:0] instr_q, instr_d;
-  logic        instr_err_q, instr_err_d;
+  logic        ifid_valid, ifid_err;
+  logic [31:0] ifid_pc, ifid_instr;
+  logic        ifid_accept;
+  logic        if_redirect;
+  logic [31:0] if_redirect_pc;
 
   // --------------------------------------------------------------------
-  // Instruction fetch
+  // S2 <-> S3
   // --------------------------------------------------------------------
-  assign instr_req_o  = (state_q == ST_FETCH) & ~instr_gnt_q;
-  assign instr_addr_o = pc_q;
+  logic [REG_ADDR_W-1:0] id_rs1_addr, id_rs2_addr, id_rd_addr;
+  logic                  id_rs1_used, id_rs2_used;
+  ctrl_t                 id_ctrl;
+  logic [31:0]           id_rs1_data, id_rs2_data, id_imm;
+  logic [CSR_ADDR_W-1:0] id_csr_addr;
+  logic                  id_csr_use_imm;
+  logic                  id_take_branch, id_is_branch, id_fence;
+  logic [31:0]           id_branch_target;
 
-  // --------------------------------------------------------------------
-  // Decode
-  // --------------------------------------------------------------------
-  logic [REG_ADDR_W-1:0] rs1_addr, rs2_addr, rd_addr;
-  logic                  rs1_used, rs2_used;
-  imm_sel_e              imm_sel;
-  alu_op_e               alu_op;
-  op_a_sel_e             op_a_sel;
-  op_b_sel_e             op_b_sel;
+  logic                  idex_valid;
+  ctrl_t                 idex_ctrl;
+  logic [REG_ADDR_W-1:0] idex_rd;
+  logic                  ex_ready, ex_retire, ex_halt;
+  logic [31:0]           idex_pc, idex_instr, idex_pc_next;
+  logic [REG_ADDR_W-1:0] idex_rs1_addr, idex_rs2_addr;
+  logic [31:0]           idex_rs1_data, idex_rs2_data;
+  logic [31:0]           ex_result;
   logic                  rf_we;
-  wb_sel_e               wb_sel;
-  logic                  mem_req, mem_we;
-  mem_size_e             mem_size;
-  logic                  mem_signed;
-  logic                  is_branch, is_jump, is_jalr;
-  logic [2:0]            br_op;
-  logic                  csr_en;
-  csr_op_e               csr_op;
-  logic [CSR_ADDR_W-1:0] csr_addr;
-  logic                  csr_use_imm, csr_read, csr_write;
-  logic                  ecall, ebreak, mret, wfi, fence;
-  logic                  illegal_instr;
-
-  decoder u_decoder (
-    .instr_i         (instr_q),
-    .rs1_addr_o      (rs1_addr),
-    .rs2_addr_o      (rs2_addr),
-    .rd_addr_o       (rd_addr),
-    .rs1_used_o      (rs1_used),
-    .rs2_used_o      (rs2_used),
-    .imm_sel_o       (imm_sel),
-    .alu_op_o        (alu_op),
-    .op_a_sel_o      (op_a_sel),
-    .op_b_sel_o      (op_b_sel),
-    .rf_we_o         (rf_we),
-    .wb_sel_o        (wb_sel),
-    .mem_req_o       (mem_req),
-    .mem_we_o        (mem_we),
-    .mem_size_o      (mem_size),
-    .mem_signed_o    (mem_signed),
-    .is_branch_o     (is_branch),
-    .br_op_o         (br_op),
-    .is_jump_o       (is_jump),
-    .is_jalr_o       (is_jalr),
-    .csr_en_o        (csr_en),
-    .csr_op_o        (csr_op),
-    .csr_addr_o      (csr_addr),
-    .csr_use_imm_o   (csr_use_imm),
-    .csr_read_o      (csr_read),
-    .csr_write_o     (csr_write),
-    .ecall_o         (ecall),
-    .ebreak_o        (ebreak),
-    .mret_o          (mret),
-    .wfi_o           (wfi),
-    .fence_o         (fence),
-    .illegal_instr_o (illegal_instr)
-  );
-
-  logic [31:0] imm;
-  imm_gen u_imm_gen (
-    .instr_i   (instr_q[31:7]),
-    .imm_sel_i (imm_sel),
-    .imm_o     (imm)
-  );
+  logic [REG_ADDR_W-1:0] rf_waddr;
+  logic [31:0]           rf_wdata;
+  logic [3:0]            mem_rmask, mem_wmask;
+  logic [31:0]           mem_rdata, mem_wdata;
 
   // --------------------------------------------------------------------
-  // Register file
+  // Hazard control
   // --------------------------------------------------------------------
-  logic [31:0] rs1_data, rs2_data;
-  logic [31:0] rf_wdata;
+  logic idex_en, idex_valid_next;
+  logic fwd_rs1, fwd_rs2;
+  logic id_stall;
 
-  // The regfile write port is driven from registers, never combinationally
-  // from this instruction's own result.
-  //
-  // Two reasons, and both matter. Correctness first: `regfile.sv` implements a
-  // WRITE-FIRST bypass, which is exactly right when the writer (S3) and the
-  // reader (S2) are different instructions, as they are once the pipeline
-  // exists at M3. In a single-cycle datapath the writer and the reader are the
-  // SAME instruction, so a bypass would make `add x1, x1, x2` read the value
-  // it is in the middle of computing instead of the old x1. Second, it would
-  // close a real combinational loop: the bypass makes rdata depend on we_i,
-  // while we_i depends on whether the instruction commits, which depends on
-  // the branch comparator and the JALR target, which depend on rdata.
-  //
-  // Committing through registers breaks both problems at once. The write lands
-  // in the cycle after ST_EXEC (or after ST_MEM), which is always at or before
-  // the next instruction's own ST_EXEC, so no instruction ever observes stale
-  // architectural state.
-  logic                  wb_we_q,   wb_we_d;
-  logic [REG_ADDR_W-1:0] wb_addr_q, wb_addr_d;
-  logic [31:0]           wb_data_q, wb_data_d;
+  // --------------------------------------------------------------------
+  // S1: instruction fetch
+  // --------------------------------------------------------------------
+  e_core_if_stage #(
+    .RESET_VECTOR (RESET_VECTOR)
+  ) u_if_stage (
+    .clk_i          (clk_i),
+    .rst_ni         (rst_ni),
+    .instr_req_o    (instr_req_o),
+    .instr_addr_o   (instr_addr_o),
+    .instr_gnt_i    (instr_gnt_i),
+    .instr_rvalid_i (instr_rvalid_i),
+    .instr_rdata_i  (instr_rdata_i),
+    .instr_err_i    (instr_err_i),
+    .redirect_i     (if_redirect),
+    .redirect_pc_i  (if_redirect_pc),
+    .ifid_accept_i  (ifid_accept),
+    .ifid_valid_o   (ifid_valid),
+    .ifid_pc_o      (ifid_pc),
+    .ifid_instr_o   (ifid_instr),
+    .ifid_err_o     (ifid_err)
+  );
 
-  regfile u_regfile (
-    .clk_i     (clk_i),
-    .raddr_a_i (rs1_addr),
-    .rdata_a_o (rs1_data),
-    .raddr_b_i (rs2_addr),
-    .rdata_b_o (rs2_data),
-    .we_i      (wb_we_q),
-    .waddr_i   (wb_addr_q),
-    .wdata_i   (wb_data_q)
+  assign if_redirect_pc = id_branch_target;
+
+  // --------------------------------------------------------------------
+  // S2: decode and register read
+  // --------------------------------------------------------------------
+  e_core_id_stage u_id_stage (
+    .clk_i            (clk_i),
+    .ifid_valid_i     (ifid_valid),
+    .ifid_pc_i        (ifid_pc),
+    .ifid_instr_i     (ifid_instr),
+    .fwd_rs1_i        (fwd_rs1),
+    .fwd_rs2_i        (fwd_rs2),
+    .ex_result_i      (ex_result),
+    .rf_we_i          (rf_we),
+    .rf_waddr_i       (rf_waddr),
+    .rf_wdata_i       (rf_wdata),
+    .rs1_addr_o       (id_rs1_addr),
+    .rs2_addr_o       (id_rs2_addr),
+    .rs1_used_o       (id_rs1_used),
+    .rs2_used_o       (id_rs2_used),
+    .ctrl_o           (id_ctrl),
+    .rd_addr_o        (id_rd_addr),
+    .rs1_data_o       (id_rs1_data),
+    .rs2_data_o       (id_rs2_data),
+    .imm_o            (id_imm),
+    .csr_addr_o       (id_csr_addr),
+    .csr_use_imm_o    (id_csr_use_imm),
+    .take_branch_o    (id_take_branch),
+    .branch_target_o  (id_branch_target),
+    .is_branch_o      (id_is_branch),
+    .fence_o          (id_fence)
   );
 
   // --------------------------------------------------------------------
-  // ALU
+  // S3: execute, memory, writeback
   // --------------------------------------------------------------------
-  logic [31:0] alu_a, alu_b, alu_result;
-  logic        cmp_eq, cmp_lt, cmp_ltu;
-
-  always_comb begin
-    unique case (op_a_sel)
-      OP_A_PC:   alu_a = pc_q;
-      OP_A_ZERO: alu_a = 32'd0;
-      default:   alu_a = rs1_data;   // OP_A_RS1
-    endcase
-  end
-
-  assign alu_b = (op_b_sel == OP_B_IMM) ? imm : rs2_data;
-
-  alu u_alu (
-    .operator_i  (alu_op),
-    .operand_a_i (alu_a),
-    .operand_b_i (alu_b),
-    .result_o    (alu_result),
-    .cmp_eq_o    (cmp_eq),
-    .cmp_lt_o    (cmp_lt),
-    .cmp_ltu_o   (cmp_ltu)
+  e_core_ex_stage u_ex_stage (
+    .clk_i              (clk_i),
+    .rst_ni             (rst_ni),
+    .idex_en_i          (idex_en),
+    .idex_valid_i       (idex_valid_next),
+    .id_pc_i            (ifid_pc),
+    .id_instr_i         (ifid_instr),
+    .id_ctrl_i          (id_ctrl),
+    .id_rd_i            (id_rd_addr),
+    .id_rs1_addr_i      (id_rs1_addr),
+    .id_rs2_addr_i      (id_rs2_addr),
+    .id_rs1_data_i      (id_rs1_data),
+    .id_rs2_data_i      (id_rs2_data),
+    .id_imm_i           (id_imm),
+    .id_instr_err_i     (ifid_err),
+    .id_branch_target_i (id_branch_target),
+    .id_take_branch_i   (id_take_branch),
+    .data_req_o         (data_req_o),
+    .data_addr_o        (data_addr_o),
+    .data_we_o          (data_we_o),
+    .data_be_o          (data_be_o),
+    .data_wdata_o       (data_wdata_o),
+    .data_gnt_i         (data_gnt_i),
+    .data_rvalid_i      (data_rvalid_i),
+    .data_rdata_i       (data_rdata_i),
+    .data_err_i         (data_err_i),
+    .ex_ready_o         (ex_ready),
+    .idex_valid_o       (idex_valid),
+    .idex_ctrl_o        (idex_ctrl),
+    .idex_rd_o          (idex_rd),
+    .ex_result_o        (ex_result),
+    .rf_we_o            (rf_we),
+    .rf_waddr_o         (rf_waddr),
+    .rf_wdata_o         (rf_wdata),
+    .retire_o           (ex_retire),
+    .halt_o             (ex_halt),
+    .idex_pc_o          (idex_pc),
+    .idex_instr_o       (idex_instr),
+    .idex_rs1_addr_o    (idex_rs1_addr),
+    .idex_rs2_addr_o    (idex_rs2_addr),
+    .idex_rs1_data_o    (idex_rs1_data),
+    .idex_rs2_data_o    (idex_rs2_data),
+    .idex_pc_next_o     (idex_pc_next),
+    .mem_rmask_o        (mem_rmask),
+    .mem_wmask_o        (mem_wmask),
+    .mem_rdata_o        (mem_rdata),
+    .mem_wdata_o        (mem_wdata)
   );
 
   // --------------------------------------------------------------------
-  // Branch comparator.
-  // The ALU's own comparison outputs are only valid when it is driven as a
-  // subtraction, which is not the case for a branch (the ALU is unused). A
-  // dedicated comparator instance is therefore used, fed directly with rs1
-  // and rs2. At M3 this becomes the ID-stage comparator that resolves
-  // branches one stage earlier than the ALU.
+  // Hazard, stall and forwarding control
   // --------------------------------------------------------------------
-  logic br_eq, br_lt, br_ltu;
-  logic [31:0] br_cmp_unused;
-
-  alu u_branch_cmp (
-    .operator_i  (ALU_SUB),
-    .operand_a_i (rs1_data),
-    .operand_b_i (rs2_data),
-    .result_o    (br_cmp_unused),
-    .cmp_eq_o    (br_eq),
-    .cmp_lt_o    (br_lt),
-    .cmp_ltu_o   (br_ltu)
+  e_core_hazard u_hazard (
+    .ifid_valid_i     (ifid_valid),
+    .id_rs1_addr_i    (id_rs1_addr),
+    .id_rs2_addr_i    (id_rs2_addr),
+    .id_rs1_used_i    (id_rs1_used),
+    .id_rs2_used_i    (id_rs2_used),
+    .idex_valid_i     (idex_valid),
+    .idex_rf_we_i     (idex_ctrl.rf_we),
+    .idex_mem_req_i   (idex_ctrl.mem_req),
+    .idex_mem_we_i    (idex_ctrl.mem_we),
+    .idex_csr_en_i    (idex_ctrl.csr_en),
+    .idex_rd_i        (idex_rd),
+    .ex_ready_i       (ex_ready),
+    .id_take_branch_i (id_take_branch),
+    .ex_halt_i        (ex_halt),
+    .ifid_accept_o    (ifid_accept),
+    .idex_en_o        (idex_en),
+    .idex_valid_o     (idex_valid_next),
+    .if_redirect_o    (if_redirect),
+    .fwd_rs1_o        (fwd_rs1),
+    .fwd_rs2_o        (fwd_rs2),
+    .stall_o          (id_stall)
   );
-
-  logic branch_taken;
-  always_comb begin
-    unique case (br_op)
-      BR_NE:   branch_taken = ~br_eq;
-      BR_LT:   branch_taken = br_lt;
-      BR_GE:   branch_taken = ~br_lt;
-      BR_LTU:  branch_taken = br_ltu;
-      BR_GEU:  branch_taken = ~br_ltu;
-      default: branch_taken = br_eq;   // BR_EQ, and the two reserved encodings
-                                       // which the decoder has already
-                                       // rejected as illegal
-    endcase
-  end
-
-  // --------------------------------------------------------------------
-  // Control transfer targets
-  // --------------------------------------------------------------------
-  logic [31:0] pc_plus_4, pc_target, jalr_target, next_pc;
-
-  assign pc_plus_4   = pc_q + 32'd4;
-  assign pc_target   = pc_q + imm;                  // JAL and branches
-  assign jalr_target = (rs1_data + imm) & ~32'd1;   // JALR clears bit 0
-
-  always_comb begin
-    if (is_jalr) begin
-      next_pc = jalr_target;
-    end else if (is_jump || (is_branch && branch_taken)) begin
-      next_pc = pc_target;
-    end else begin
-      next_pc = pc_plus_4;
-    end
-  end
-
-  // --------------------------------------------------------------------
-  // Load/store unit
-  // --------------------------------------------------------------------
-  logic [3:0]  lsu_be;
-  logic [31:0] lsu_wdata, lsu_rdata_ext;
-  logic        lsu_misaligned;
-
-  lsu u_lsu (
-    .size_i           (mem_size),
-    .sign_i           (mem_signed),
-    .addr_lsb_i       (alu_result[1:0]),
-    .wdata_i          (rs2_data),
-    .be_o             (lsu_be),
-    .wdata_aligned_o  (lsu_wdata),
-    .rdata_i          (data_rdata_i),
-    .rdata_ext_o      (lsu_rdata_ext),
-    .misaligned_o     (lsu_misaligned)
-  );
-
-  assign data_req_o   = (state_q == ST_MEM) & ~data_gnt_q;
-  assign data_addr_o  = {alu_result[31:2], 2'b00};
-  assign data_we_o    = mem_we;
-  assign data_be_o    = lsu_be;
-  assign data_wdata_o = lsu_wdata;
-
-  // --------------------------------------------------------------------
-  // Writeback value
-  // --------------------------------------------------------------------
-  always_comb begin
-    unique case (wb_sel)
-      WB_MEM:  rf_wdata = lsu_rdata_ext;
-      WB_PC4:  rf_wdata = pc_plus_4;
-      WB_CSR:  rf_wdata = 32'd0;   // unreachable: CSR instructions halt in
-                                   // this version, see the header
-      default: rf_wdata = alu_result;   // WB_ALU
-    endcase
-  end
-
-  // --------------------------------------------------------------------
-  // What this version cannot execute architecturally.
-  // Grouping the condition in one signal keeps the halt reason explicit and
-  // means the M3 rewrite has a single place to replace with trap entry.
-  // --------------------------------------------------------------------
-  logic unimplemented;
-  assign unimplemented = illegal_instr | ecall | ebreak | mret | wfi | csr_en |
-                         instr_err_q | (mem_req & lsu_misaligned) |
-                         (is_branch & branch_taken & |pc_target[1:0]) |
-                         (is_jump & |next_pc[1:0]);
-
-  // --------------------------------------------------------------------
-  // Sequencer next-state and retirement
-  // --------------------------------------------------------------------
-  logic retire;          // an instruction completes architecturally this cycle
-  logic mem_retire;      // it completes out of ST_MEM (a load or a store)
-
-  always_comb begin
-    state_d      = state_q;
-    pc_d         = pc_q;
-    instr_d      = instr_q;
-    instr_err_d  = instr_err_q;
-    instr_gnt_d  = instr_gnt_q;
-    data_gnt_d   = data_gnt_q;
-    retire       = 1'b0;
-    mem_retire   = 1'b0;
-    // The writeback register is a one-shot: it holds for exactly the cycle
-    // after retirement, so each instruction writes the register file once.
-    wb_we_d      = 1'b0;
-    wb_addr_d    = rd_addr;
-    wb_data_d    = rf_wdata;
-
-    unique case (state_q)
-      ST_FETCH: begin
-        if (instr_rvalid_i) begin
-          instr_d     = instr_rdata_i;
-          instr_err_d = instr_err_i;
-          instr_gnt_d = 1'b0;
-          state_d     = ST_EXEC;
-        end else if (instr_req_o && instr_gnt_i) begin
-          instr_gnt_d = 1'b1;
-        end
-      end
-
-      ST_EXEC: begin
-        if (unimplemented) begin
-          state_d = ST_HALTED;
-        end else if (mem_req) begin
-          data_gnt_d = 1'b0;
-          state_d    = ST_MEM;
-        end else begin
-          wb_we_d = rf_we;
-          pc_d    = next_pc;
-          retire  = 1'b1;
-          state_d = ST_FETCH;
-        end
-      end
-
-      ST_MEM: begin
-        if (data_rvalid_i) begin
-          // A bus error on a load or store is an access fault, which needs
-          // the trap machinery that arrives at M5.
-          if (data_err_i) begin
-            state_d = ST_HALTED;
-          end else begin
-            wb_we_d    = rf_we;
-            pc_d       = next_pc;
-            retire     = 1'b1;
-            mem_retire = 1'b1;
-            state_d    = ST_FETCH;
-          end
-        end else if (data_req_o && data_gnt_i) begin
-          data_gnt_d = 1'b1;
-        end
-      end
-
-      default: begin   // ST_HALTED: nothing further happens
-        state_d = ST_HALTED;
-      end
-    endcase
-  end
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      state_q     <= ST_FETCH;
-      pc_q        <= RESET_VECTOR;
-      instr_q     <= 32'd0;
-      instr_err_q <= 1'b0;
-      instr_gnt_q <= 1'b0;
-      data_gnt_q  <= 1'b0;
-      wb_we_q     <= 1'b0;
-      wb_addr_q   <= {REG_ADDR_W{1'b0}};
-      wb_data_q   <= 32'd0;
-    end else begin
-      state_q     <= state_d;
-      pc_q        <= pc_d;
-      instr_q     <= instr_d;
-      instr_err_q <= instr_err_d;
-      instr_gnt_q <= instr_gnt_d;
-      data_gnt_q  <= data_gnt_d;
-      wb_we_q     <= wb_we_d;
-      wb_addr_q   <= wb_addr_d;
-      wb_data_q   <= wb_data_d;
-    end
-  end
 
   // --------------------------------------------------------------------
   // RVFI trace port
   // --------------------------------------------------------------------
   logic [63:0] rvfi_order_q;
-  logic        halting;
+  logic        rvfi_event;
 
-  assign halting = (state_q == ST_EXEC && unimplemented) ||
-                   (state_q == ST_MEM && data_rvalid_i && data_err_i);
+  assign rvfi_event = ex_retire | ex_halt;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       rvfi_order_q <= 64'd0;
-    end else if (retire || halting) begin
+    end else if (rvfi_event) begin
       rvfi_order_q <= rvfi_order_q + 64'd1;
     end
   end
 
   if (RVFI) begin : gen_rvfi
-    assign rvfi_valid_o     = retire | halting;
+    // The trace reports the instruction in S3, which is the only stage where
+    // an instruction is architecturally complete. rs1/rs2 values are the ones
+    // captured into the ID/EX register, so they already reflect any forwarding
+    // that took place in S2.
+    assign rvfi_valid_o     = rvfi_event;
     assign rvfi_order_o     = rvfi_order_q;
-    assign rvfi_insn_o      = instr_q;
-    assign rvfi_trap_o      = halting;
-    assign rvfi_halt_o      = halting;
+    assign rvfi_insn_o      = idex_instr;
+    assign rvfi_trap_o      = ex_halt;
+    assign rvfi_halt_o      = ex_halt;
     assign rvfi_intr_o      = 1'b0;
-    assign rvfi_mode_o      = 2'b11;          // machine mode
-    assign rvfi_ixl_o       = 2'b01;          // XLEN = 32
-    assign rvfi_rs1_addr_o  = rs1_used ? rs1_addr : 5'd0;
-    assign rvfi_rs2_addr_o  = rs2_used ? rs2_addr : 5'd0;
-    assign rvfi_rs1_rdata_o = rs1_used ? rs1_data : 32'd0;
-    assign rvfi_rs2_rdata_o = rs2_used ? rs2_data : 32'd0;
-    assign rvfi_rd_addr_o   = wb_we_d ? rd_addr : 5'd0;
-    assign rvfi_rd_wdata_o  = (wb_we_d && rd_addr != 5'd0) ? rf_wdata : 32'd0;
-    assign rvfi_pc_rdata_o  = pc_q;
-    assign rvfi_pc_wdata_o  = next_pc;
+    assign rvfi_mode_o      = 2'b11;   // machine mode
+    assign rvfi_ixl_o       = 2'b01;   // XLEN = 32
+    assign rvfi_rs1_addr_o  = idex_rs1_addr;
+    assign rvfi_rs2_addr_o  = idex_rs2_addr;
+    assign rvfi_rs1_rdata_o = idex_rs1_data;
+    assign rvfi_rs2_rdata_o = idex_rs2_data;
+    assign rvfi_rd_addr_o   = rf_we ? rf_waddr : 5'd0;
+    assign rvfi_rd_wdata_o  = (rf_we && rf_waddr != 5'd0) ? rf_wdata : 32'd0;
+    assign rvfi_pc_rdata_o  = idex_pc;
+    assign rvfi_pc_wdata_o  = idex_pc_next;
     assign rvfi_mem_addr_o  = data_addr_o;
-    assign rvfi_mem_rmask_o = (mem_retire && !mem_we) ? lsu_be : 4'd0;
-    assign rvfi_mem_wmask_o = (mem_retire &&  mem_we) ? lsu_be : 4'd0;
-    assign rvfi_mem_rdata_o = data_rdata_i;
-    assign rvfi_mem_wdata_o = lsu_wdata;
+    assign rvfi_mem_rmask_o = mem_rmask;
+    assign rvfi_mem_wmask_o = mem_wmask;
+    assign rvfi_mem_rdata_o = mem_rdata;
+    assign rvfi_mem_wdata_o = mem_wdata;
   end else begin : gen_no_rvfi
-    // Tied off so synthesis prunes the trace logic entirely when RVFI is
-    // disabled, which is the point of putting it behind a parameter.
     assign rvfi_valid_o     = 1'b0;
     assign rvfi_order_o     = 64'd0;
     assign rvfi_insn_o      = 32'd0;
@@ -515,19 +332,27 @@ module e_core_top
   end
 
   // --------------------------------------------------------------------
-  // Signals that this M2 version decodes but does not yet act on. They are
-  // consumed here so that the intent is explicit rather than hidden behind a
-  // lint waiver; every one of them is wired up for real at M5.
+  // Signals decoded now and consumed at M5 by csr_unit.sv / e_core_trap.sv,
+  // and counters consumed by the performance counters. Sunk explicitly so
+  // the intent is visible rather than hidden behind a lint waiver.
   // --------------------------------------------------------------------
+  // The RVFI-only signals are also listed: they are consumed exclusively by
+  // the gen_rvfi arm, so they are genuinely unused in the default RVFI=0
+  // elaboration that `make lint` checks.
   logic unused_m5;
-  // rs1_used/rs2_used/mem_retire are consumed only by the RVFI generate arm,
-  // so they are unused in the default RVFI=0 elaboration that `make lint`
-  // checks; sinking them here keeps that elaboration warning-free without a
-  // lint waiver.
-  assign unused_m5 = ^{csr_op, csr_addr, csr_use_imm, csr_read, csr_write,
-                       fence, irq_timer_i, irq_software_i, irq_external_i,
-                       HART_ID, imm_sel, alu_op, cmp_eq, cmp_lt, cmp_ltu,
-                       rs1_used, rs2_used, mem_retire, br_cmp_unused,
-                       lsu_misaligned, is_jalr};
+  assign unused_m5 = ^{id_csr_addr, id_csr_use_imm, id_is_branch, id_fence,
+                       id_stall, irq_timer_i, irq_software_i, irq_external_i,
+                       HART_ID,
+                       idex_ctrl.alu_op, idex_ctrl.op_a_sel, idex_ctrl.op_b_sel,
+                       idex_ctrl.wb_sel, idex_ctrl.mem_size,
+                       idex_ctrl.mem_signed, idex_ctrl.csr_op,
+                       idex_ctrl.csr_read, idex_ctrl.csr_write,
+                       idex_ctrl.is_branch, idex_ctrl.is_jump,
+                       idex_ctrl.illegal, idex_ctrl.ecall, idex_ctrl.ebreak,
+                       idex_ctrl.mret, idex_ctrl.wfi,
+                       idex_pc, idex_instr, idex_pc_next,
+                       idex_rs1_addr, idex_rs2_addr,
+                       idex_rs1_data, idex_rs2_data,
+                       mem_rmask, mem_wmask, mem_rdata, mem_wdata};
 
 endmodule : e_core_top
