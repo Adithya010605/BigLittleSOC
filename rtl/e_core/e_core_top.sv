@@ -15,19 +15,12 @@
 // This module is wiring: it contains no control logic of its own beyond the
 // RVFI trace assembly.
 //
-// ---------------------------------------------------------------------------
-// MILESTONE M3 SCOPE
-// ---------------------------------------------------------------------------
-// Implemented: the full RV32I integer instruction set, FENCE/FENCE.I as
-// architectural NOPs, EX->ID operand forwarding, load-use and CSR-use
-// interlocks, branch and jump resolution in ID with a one-cycle penalty, and
-// arbitrary-latency memory back-pressure on both ports.
-//
-// Not yet implemented: Zicsr, trap entry, MRET and interrupts. As at M2, an
-// instruction that cannot be executed architecturally halts the core in a
-// defined state and reports itself on the RVFI port with rvfi_trap and
-// rvfi_halt set, rather than being mis-executed. csr_unit.sv and
-// e_core_trap.sv replace that halt at M5.
+// Implemented: the full RV32I integer instruction set, Zicsr with a
+// machine-mode CSR file and performance counters, the complete machine-mode
+// exception set with correct priority, MRET, timer/software/external
+// interrupts, FENCE/FENCE.I as architectural NOPs, EX->ID operand forwarding,
+// load-use and CSR-use interlocks, branch and jump resolution in ID with a
+// one-cycle penalty, and arbitrary-latency memory back-pressure on both ports.
 // ============================================================================
 
 module e_core_top
@@ -94,7 +87,8 @@ module e_core_top
   logic        ifid_valid, ifid_err;
   logic [31:0] ifid_pc, ifid_instr;
   logic        ifid_accept;
-  logic        if_redirect;
+  logic        if_redirect;        // to the IF stage: steer the PC
+  logic        branch_redirect;    // from the hazard unit: a taken branch/jump
   logic [31:0] if_redirect_pc;
 
   // --------------------------------------------------------------------
@@ -111,8 +105,29 @@ module e_core_top
 
   logic                  idex_valid;
   ctrl_t                 idex_ctrl;
+  logic                  ex_commit;
+  logic [31:0]           csr_rdata;
+  logic                  csr_illegal;
+  logic                  csr_en, csr_write, csr_commit;
+  csr_op_e               csr_op;
+  logic [CSR_ADDR_W-1:0] csr_addr;
+  logic [31:0]           csr_wdata;
+  logic                  exc_instr_err, exc_illegal, exc_ecall, exc_ebreak;
+  logic                  exc_mret, exc_instr_misaligned;
+  logic [31:0]           exc_instr_target;
+  logic                  exc_mem_req, exc_mem_we, exc_mem_misaligned, exc_mem_err;
+  logic [31:0]           exc_mem_addr;
+  logic                  trap_taken, trap_is_irq;
+  logic [4:0]            trap_cause;
+  logic [31:0]           trap_tval;
+  logic [31:1]           trap_epc;
+  logic                  trap_redirect;
+  logic [31:0]           trap_redirect_pc;
+  logic [31:0]           mtvec, mepc, mip, mie;
+  logic                  mstatus_mie;
+  logic                  perf_branch, perf_branch_taken, perf_mem;
   logic [REG_ADDR_W-1:0] idex_rd;
-  logic                  ex_ready, ex_retire, ex_halt;
+  logic                  ex_ready, ex_retire;
   logic [31:0]           idex_pc, idex_instr, idex_pc_next;
   logic [REG_ADDR_W-1:0] idex_rs1_addr, idex_rs2_addr;
   logic [31:0]           idex_rs1_data, idex_rs2_data;
@@ -153,7 +168,12 @@ module e_core_top
     .ifid_err_o     (ifid_err)
   );
 
-  assign if_redirect_pc = id_branch_target;
+  // A trap or MRET steers the PC in preference to a taken branch, because the
+  // branch is in S2 while the trapping instruction is in S3, one stage older.
+  // Both the enable and the address have to be muxed: driving only the address
+  // leaves a trap silently falling through to PC+4.
+  assign if_redirect    = trap_redirect | branch_redirect;
+  assign if_redirect_pc = trap_redirect ? trap_redirect_pc : id_branch_target;
 
   // --------------------------------------------------------------------
   // S2: decode and register read
@@ -206,6 +226,8 @@ module e_core_top
     .id_instr_err_i     (ifid_err),
     .id_branch_target_i (id_branch_target),
     .id_take_branch_i   (id_take_branch),
+    .id_csr_addr_i      (id_csr_addr),
+    .id_csr_use_imm_i   (id_csr_use_imm),
     .data_req_o         (data_req_o),
     .data_addr_o        (data_addr_o),
     .data_we_o          (data_we_o),
@@ -215,6 +237,27 @@ module e_core_top
     .data_rvalid_i      (data_rvalid_i),
     .data_rdata_i       (data_rdata_i),
     .data_err_i         (data_err_i),
+    .csr_rdata_i        (csr_rdata),
+    .csr_illegal_i      (csr_illegal),
+    .csr_en_o           (csr_en),
+    .csr_write_o        (csr_write),
+    .csr_op_o           (csr_op),
+    .csr_addr_o         (csr_addr),
+    .csr_wdata_o        (csr_wdata),
+    .csr_commit_o       (csr_commit),
+    .trap_i             (trap_taken),
+    .exc_instr_err_o        (exc_instr_err),
+    .exc_illegal_o          (exc_illegal),
+    .exc_ecall_o            (exc_ecall),
+    .exc_ebreak_o           (exc_ebreak),
+    .exc_mret_o             (exc_mret),
+    .exc_instr_misaligned_o (exc_instr_misaligned),
+    .exc_instr_target_o     (exc_instr_target),
+    .exc_mem_req_o          (exc_mem_req),
+    .exc_mem_we_o           (exc_mem_we),
+    .exc_mem_misaligned_o   (exc_mem_misaligned),
+    .exc_mem_err_o          (exc_mem_err),
+    .exc_mem_addr_o         (exc_mem_addr),
     .ex_ready_o         (ex_ready),
     .idex_valid_o       (idex_valid),
     .idex_ctrl_o        (idex_ctrl),
@@ -223,8 +266,8 @@ module e_core_top
     .rf_we_o            (rf_we),
     .rf_waddr_o         (rf_waddr),
     .rf_wdata_o         (rf_wdata),
+    .commit_o           (ex_commit),
     .retire_o           (ex_retire),
-    .halt_o             (ex_halt),
     .idex_pc_o          (idex_pc),
     .idex_instr_o       (idex_instr),
     .idex_rs1_addr_o    (idex_rs1_addr),
@@ -232,6 +275,9 @@ module e_core_top
     .idex_rs1_data_o    (idex_rs1_data),
     .idex_rs2_data_o    (idex_rs2_data),
     .idex_pc_next_o     (idex_pc_next),
+    .perf_branch_o       (perf_branch),
+    .perf_branch_taken_o (perf_branch_taken),
+    .perf_mem_o          (perf_mem),
     .mem_rmask_o        (mem_rmask),
     .mem_wmask_o        (mem_wmask),
     .mem_rdata_o        (mem_rdata),
@@ -255,14 +301,85 @@ module e_core_top
     .idex_rd_i        (idex_rd),
     .ex_ready_i       (ex_ready),
     .id_take_branch_i (id_take_branch),
-    .ex_halt_i        (ex_halt),
+    .flush_i          (trap_redirect),
     .ifid_accept_o    (ifid_accept),
     .idex_en_o        (idex_en),
     .idex_valid_o     (idex_valid_next),
-    .if_redirect_o    (if_redirect),
+    .if_redirect_o    (branch_redirect),
     .fwd_rs1_o        (fwd_rs1),
     .fwd_rs2_o        (fwd_rs2),
     .stall_o          (id_stall)
+  );
+
+  // --------------------------------------------------------------------
+  // Machine-mode CSR file
+  // --------------------------------------------------------------------
+  csr_unit #(
+    .HART_ID (HART_ID)
+  ) u_csr (
+    .clk_i           (clk_i),
+    .rst_ni          (rst_ni),
+    .csr_en_i        (csr_en),
+    .csr_write_i     (csr_write),
+    .csr_op_i        (csr_op),
+    .csr_addr_i      (csr_addr),
+    .csr_wdata_i     (csr_wdata),
+    .csr_commit_i    (csr_commit),
+    .csr_rdata_o     (csr_rdata),
+    .csr_illegal_o   (csr_illegal),
+    .trap_i          (trap_taken),
+    .trap_pc_i       (trap_epc),
+    .trap_cause_i    (trap_cause),
+    .trap_is_irq_i   (trap_is_irq),
+    .trap_tval_i     (trap_tval),
+    .mret_i          (trap_redirect & ~trap_taken),
+    .mtvec_o         (mtvec),
+    .mepc_o          (mepc),
+    .mstatus_mie_o   (mstatus_mie),
+    .mip_o           (mip),
+    .mie_o           (mie),
+    .irq_timer_i     (irq_timer_i),
+    .irq_software_i  (irq_software_i),
+    .irq_external_i  (irq_external_i),
+    .instr_retired_i (ex_retire),
+    .stall_i         (id_stall),
+    .branch_i        (perf_branch),
+    .branch_taken_i  (perf_branch_taken),
+    .mem_access_i    (perf_mem)
+  );
+
+  // --------------------------------------------------------------------
+  // Exception prioritisation and trap entry
+  // --------------------------------------------------------------------
+  e_core_trap u_trap (
+    .valid_i            (idex_valid),
+    .commit_i           (ex_commit),
+    .pc_i               (idex_pc),
+    .instr_i            (idex_instr),
+    .instr_err_i        (exc_instr_err),
+    .illegal_i          (exc_illegal),
+    .ecall_i            (exc_ecall),
+    .ebreak_i           (exc_ebreak),
+    .instr_misaligned_i (exc_instr_misaligned),
+    .instr_target_i     (exc_instr_target),
+    .mem_req_i          (exc_mem_req),
+    .mem_we_i           (exc_mem_we),
+    .mem_misaligned_i   (exc_mem_misaligned),
+    .mem_err_i          (exc_mem_err),
+    .mem_addr_i         (exc_mem_addr),
+    .mstatus_mie_i      (mstatus_mie),
+    .mie_i              (mie),
+    .mip_i              (mip),
+    .mret_i             (exc_mret),
+    .mepc_i             (mepc),
+    .mtvec_i            (mtvec),
+    .trap_o             (trap_taken),
+    .cause_o            (trap_cause),
+    .is_irq_o           (trap_is_irq),
+    .tval_o             (trap_tval),
+    .epc_o              (trap_epc),
+    .redirect_o         (trap_redirect),
+    .redirect_pc_o      (trap_redirect_pc)
   );
 
   // --------------------------------------------------------------------
@@ -271,7 +388,7 @@ module e_core_top
   logic [63:0] rvfi_order_q;
   logic        rvfi_event;
 
-  assign rvfi_event = ex_retire | ex_halt;
+  assign rvfi_event = ex_retire | trap_taken;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -289,9 +406,9 @@ module e_core_top
     assign rvfi_valid_o     = rvfi_event;
     assign rvfi_order_o     = rvfi_order_q;
     assign rvfi_insn_o      = idex_instr;
-    assign rvfi_trap_o      = ex_halt;
-    assign rvfi_halt_o      = ex_halt;
-    assign rvfi_intr_o      = 1'b0;
+    assign rvfi_trap_o      = trap_taken;
+    assign rvfi_halt_o      = 1'b0;   // this core never stops fetching
+    assign rvfi_intr_o      = trap_is_irq;
     assign rvfi_mode_o      = 2'b11;   // machine mode
     assign rvfi_ixl_o       = 2'b01;   // XLEN = 32
     assign rvfi_rs1_addr_o  = idex_rs1_addr;
@@ -301,7 +418,7 @@ module e_core_top
     assign rvfi_rd_addr_o   = rf_we ? rf_waddr : 5'd0;
     assign rvfi_rd_wdata_o  = (rf_we && rf_waddr != 5'd0) ? rf_wdata : 32'd0;
     assign rvfi_pc_rdata_o  = idex_pc;
-    assign rvfi_pc_wdata_o  = idex_pc_next;
+    assign rvfi_pc_wdata_o  = trap_redirect ? trap_redirect_pc : idex_pc_next;
     assign rvfi_mem_addr_o  = data_addr_o;
     assign rvfi_mem_rmask_o = mem_rmask;
     assign rvfi_mem_wmask_o = mem_wmask;
@@ -340,9 +457,7 @@ module e_core_top
   // the gen_rvfi arm, so they are genuinely unused in the default RVFI=0
   // elaboration that `make lint` checks.
   logic unused_m5;
-  assign unused_m5 = ^{id_csr_addr, id_csr_use_imm, id_is_branch, id_fence,
-                       id_stall, irq_timer_i, irq_software_i, irq_external_i,
-                       HART_ID,
+  assign unused_m5 = ^{id_is_branch, id_fence,
                        idex_ctrl.alu_op, idex_ctrl.op_a_sel, idex_ctrl.op_b_sel,
                        idex_ctrl.wb_sel, idex_ctrl.mem_size,
                        idex_ctrl.mem_signed, idex_ctrl.csr_op,
@@ -350,7 +465,7 @@ module e_core_top
                        idex_ctrl.is_branch, idex_ctrl.is_jump,
                        idex_ctrl.illegal, idex_ctrl.ecall, idex_ctrl.ebreak,
                        idex_ctrl.mret, idex_ctrl.wfi,
-                       idex_pc, idex_instr, idex_pc_next,
+                       idex_pc_next,
                        idex_rs1_addr, idex_rs2_addr,
                        idex_rs1_data, idex_rs2_data,
                        mem_rmask, mem_wmask, mem_rdata, mem_wdata};

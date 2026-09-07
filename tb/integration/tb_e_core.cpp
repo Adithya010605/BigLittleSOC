@@ -135,7 +135,9 @@ struct Retirement {
   uint8_t mem_wmask = 0;
   uint32_t mem_rdata = 0;
   uint32_t mem_wdata = 0;
-  bool trap = false;
+  bool trap = false;    // this instruction took a trap instead of retiring
+  bool intr = false;    // ...and the trap was an interrupt
+  bool halt = false;    // the core stopped: nothing further will execute
 };
 
 std::string FormatRetirement(const Retirement& r, const ElfImage& elf) {
@@ -157,7 +159,12 @@ std::string FormatRetirement(const Retirement& r, const ElfImage& elf) {
                   r.mem_wdata, r.mem_wmask);
     extra += b;
   }
-  if (r.trap) extra += "  <TRAP/HALT>";
+  if (r.intr) {
+    extra += "  <INTERRUPT>";
+  } else if (r.trap) {
+    extra += "  <TRAP>";
+  }
+  if (r.halt) extra += "  <HALT>";
 
   const std::string sym = elf.SymbolAt(r.pc);
   std::snprintf(buf, sizeof(buf), "%8llu %6llu  0x%08x  %08x  %-28s %-24s%s",
@@ -235,6 +242,7 @@ int main(int argc, char** argv) {
   const size_t kHistory = 50;
   uint64_t cycle = 0;
   uint64_t retired = 0;
+  uint64_t trapped = 0;
   bool timeout = false;
   bool halted = false;
   Retirement halt_rec;
@@ -287,6 +295,10 @@ int main(int argc, char** argv) {
     dq.be = static_cast<uint8_t>(top->data_be_o);
     dq.wdata = top->data_wdata_o;
 
+    top->irq_timer_i = mem.irq_timer() ? 1 : 0;
+    top->irq_software_i = mem.irq_software() ? 1 : 0;
+    top->irq_external_i = mem.irq_external() ? 1 : 0;
+
     const MemResponse ir = mem.EvaluateInstr(iq);
     const MemResponse dr = mem.EvaluateData(dq);
 
@@ -316,6 +328,8 @@ int main(int argc, char** argv) {
       r.mem_rdata = top->rvfi_mem_rdata_o;
       r.mem_wdata = top->rvfi_mem_wdata_o;
       r.trap = top->rvfi_trap_o != 0;
+      r.intr = top->rvfi_intr_o != 0;
+      r.halt = top->rvfi_halt_o != 0;
 
       if (logf != nullptr) {
         std::fprintf(logf, "%s\n", FormatRetirement(r, elf).c_str());
@@ -323,11 +337,17 @@ int main(int argc, char** argv) {
       history.push_back(r);
       if (history.size() > kHistory) history.pop_front();
 
+      // A trap is ordinary execution, not a failure: the instruction does not
+      // retire, control moves to mtvec, and the program continues. Only
+      // rvfi_halt means the core has genuinely stopped.
       if (r.trap) {
-        halted = true;
-        halt_rec = r;
+        ++trapped;
       } else {
         ++retired;
+      }
+      if (r.halt) {
+        halted = true;
+        halt_rec = r;
       }
     }
 
@@ -345,6 +365,7 @@ int main(int argc, char** argv) {
     // 5. the memory model advances, using the request captured in step 2
     mem.TickInstr(iq);
     mem.TickData(dq);
+    mem.TickTimer();
 
     ++cycle;
   }
@@ -383,9 +404,10 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "\n=== %s ===\n", why);
     std::fprintf(stderr, "program : %s\n", opt.elf_path.c_str());
     std::fprintf(stderr, "waits   : %s\n", wcfg.Describe().c_str());
-    std::fprintf(stderr, "cycles  : %llu, retired: %llu\n",
+    std::fprintf(stderr, "cycles  : %llu, retired: %llu, traps: %llu\n",
                  static_cast<unsigned long long>(cycle),
-                 static_cast<unsigned long long>(retired));
+                 static_cast<unsigned long long>(retired),
+                 static_cast<unsigned long long>(trapped));
     std::fprintf(stderr, "\nlast %zu retired instructions (most recent last):\n",
                  history.size());
     std::fprintf(stderr, "%8s %6s  %-10s  %-8s  %-28s %-24s%s\n", "cycle",
@@ -402,12 +424,6 @@ int main(int argc, char** argv) {
                  "\ne_core_sim: CORE HALTED at pc=0x%08x insn=0x%08x (%s)\n",
                  halt_rec.pc, halt_rec.insn,
                  Disassemble(halt_rec.insn, halt_rec.pc).c_str());
-    std::fprintf(stderr,
-                 "  This build of e_core_top halts on any instruction it "
-                 "cannot execute architecturally\n"
-                 "  (Zicsr, ECALL/EBREAK/MRET/WFI, illegal instructions, "
-                 "misaligned or faulting accesses).\n"
-                 "  Trap entry for those arrives at milestone M5.\n");
     dump_history("CORE HALTED");
     rc = 3;
   } else if (timeout) {
@@ -433,10 +449,11 @@ int main(int argc, char** argv) {
   }
 
   if (!opt.quiet) {
-    std::printf("e_core_sim: %s  cycles=%llu instret=%llu waits=%s%s\n",
+    std::printf("e_core_sim: %s  cycles=%llu instret=%llu traps=%llu waits=%s%s\n",
                 rc == 0 ? "PASS" : "FAIL",
                 static_cast<unsigned long long>(cycle),
                 static_cast<unsigned long long>(retired),
+                static_cast<unsigned long long>(trapped),
                 wcfg.Describe().c_str(),
                 rc == 0 ? "" : "  <-- see stderr");
   }

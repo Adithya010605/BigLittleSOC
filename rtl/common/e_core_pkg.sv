@@ -160,18 +160,84 @@ package e_core_pkg;
 
   // --------------------------------------------------------------------
   // CSR read-modify-write operation
-  //
-  // The CSR *address map*, the mstatus/mie/mip field positions and the
-  // exception-cause enumeration are added to this package by M5, together
-  // with csr_unit.sv and e_core_trap.sv that consume them. Declaring them
-  // earlier would trip Verilator's UNUSEDPARAM check and erode the
-  // zero-warning acceptance bar before the RTL that needs them exists.
   // --------------------------------------------------------------------
   typedef enum logic [1:0] {
     CSR_OP_RW = 2'b00,   // CSRRW  / CSRRWI
     CSR_OP_RS = 2'b01,   // CSRRS  / CSRRSI
     CSR_OP_RC = 2'b10    // CSRRC  / CSRRCI
   } csr_op_e;
+
+  // --------------------------------------------------------------------
+  // CSR addresses (machine mode)
+  // --------------------------------------------------------------------
+  localparam logic [11:0] CSR_MSTATUS       = 12'h300;
+  localparam logic [11:0] CSR_MISA          = 12'h301;
+  localparam logic [11:0] CSR_MIE           = 12'h304;
+  localparam logic [11:0] CSR_MTVEC         = 12'h305;
+  localparam logic [11:0] CSR_MCOUNTINHIBIT = 12'h320;
+  localparam logic [11:0] CSR_MSCRATCH      = 12'h340;
+  localparam logic [11:0] CSR_MEPC          = 12'h341;
+  localparam logic [11:0] CSR_MCAUSE        = 12'h342;
+  localparam logic [11:0] CSR_MTVAL         = 12'h343;
+  localparam logic [11:0] CSR_MIP           = 12'h344;
+
+  localparam logic [11:0] CSR_MCYCLE        = 12'hB00;
+  localparam logic [11:0] CSR_MINSTRET      = 12'hB02;
+  localparam logic [11:0] CSR_MHPMCOUNTER3  = 12'hB03;  // stall cycles
+  localparam logic [11:0] CSR_MHPMCOUNTER4  = 12'hB04;  // branch instructions
+  localparam logic [11:0] CSR_MHPMCOUNTER5  = 12'hB05;  // taken branches
+  localparam logic [11:0] CSR_MHPMCOUNTER6  = 12'hB06;  // load/store count
+
+  localparam logic [11:0] CSR_MCYCLEH       = 12'hB80;
+  localparam logic [11:0] CSR_MINSTRETH     = 12'hB82;
+  localparam logic [11:0] CSR_MHPMCOUNTER3H = 12'hB83;
+  localparam logic [11:0] CSR_MHPMCOUNTER4H = 12'hB84;
+  localparam logic [11:0] CSR_MHPMCOUNTER5H = 12'hB85;
+  localparam logic [11:0] CSR_MHPMCOUNTER6H = 12'hB86;
+
+  localparam logic [11:0] CSR_MVENDORID     = 12'hF11;
+  localparam logic [11:0] CSR_MARCHID       = 12'hF12;
+  localparam logic [11:0] CSR_MIMPID        = 12'hF13;
+  localparam logic [11:0] CSR_MHARTID       = 12'hF14;
+
+  // Custom performance counters, indexed within the mhpmcounter block.
+  localparam int unsigned PERF_STALL    = 0;  // mhpmcounter3
+  localparam int unsigned PERF_BRANCH   = 1;  // mhpmcounter4
+  localparam int unsigned PERF_BR_TAKEN = 2;  // mhpmcounter5
+  localparam int unsigned PERF_MEM      = 3;  // mhpmcounter6
+  localparam int unsigned NUM_PERF      = 4;
+
+  // misa: MXL = 1 (32-bit), extension bit 'I' (bit 8) only.
+  localparam logic [31:0] MISA_VALUE = 32'h4000_0100;
+
+  // mstatus field positions.
+  localparam int unsigned MSTATUS_MIE_BIT  = 3;
+  localparam int unsigned MSTATUS_MPIE_BIT = 7;
+  localparam int unsigned MSTATUS_MPP_LSB  = 11;   // 2 bits, hardwired 2'b11
+
+  // mie / mip bit positions.
+  localparam int unsigned IRQ_M_SOFT_BIT  = 3;
+  localparam int unsigned IRQ_M_TIMER_BIT = 7;
+  localparam int unsigned IRQ_M_EXT_BIT   = 11;
+
+  // --------------------------------------------------------------------
+  // Exception causes (mcause with the interrupt bit clear), in priority
+  // order highest first. See docs/e_core_microarchitecture.md section 6.
+  // --------------------------------------------------------------------
+  localparam logic [4:0] EXC_INSTR_MISALIGNED = 5'd0;
+  localparam logic [4:0] EXC_INSTR_ACCESS     = 5'd1;
+  localparam logic [4:0] EXC_ILLEGAL_INSTR    = 5'd2;
+  localparam logic [4:0] EXC_BREAKPOINT       = 5'd3;
+  localparam logic [4:0] EXC_LOAD_MISALIGNED  = 5'd4;
+  localparam logic [4:0] EXC_LOAD_ACCESS      = 5'd5;
+  localparam logic [4:0] EXC_STORE_MISALIGNED = 5'd6;
+  localparam logic [4:0] EXC_STORE_ACCESS     = 5'd7;
+  localparam logic [4:0] EXC_ECALL_M          = 5'd11;
+
+  // Interrupt causes (mcause with bit 31 set).
+  localparam logic [4:0] IRQ_CAUSE_M_SOFT  = 5'd3;
+  localparam logic [4:0] IRQ_CAUSE_M_TIMER = 5'd7;
+  localparam logic [4:0] IRQ_CAUSE_M_EXT   = 5'd11;
 
   // --------------------------------------------------------------------
   // Decoded control bundle carried in the ID/EX pipeline register.

@@ -160,6 +160,14 @@ void MemoryModel::ReadFor(const MemRequest& q, uint32_t* rdata,
     *rdata = 0u;
     return;
   }
+  if (addr == kIrqTimerArm) {
+    *rdata = irq_timer_ ? 1u : 0u;
+    return;
+  }
+  if (addr == kIrqTimerClear || addr == kIrqSoftware || addr == kIrqExternal) {
+    *rdata = 0u;
+    return;
+  }
   // Unmapped. This is what drives the core's access-fault exceptions.
   *err = true;
 }
@@ -196,6 +204,25 @@ void MemoryModel::CommitAccess(const MemRequest& q, bool is_instr) {
   }
   if (addr == kUartStatus) {
     return;   // status is read-only; writes are dropped
+  }
+
+  if (addr == kIrqTimerArm) {
+    timer_countdown_ = static_cast<int64_t>(q.wdata);
+    irq_timer_ = false;
+    return;
+  }
+  if (addr == kIrqTimerClear) {
+    irq_timer_ = false;
+    timer_countdown_ = -1;
+    return;
+  }
+  if (addr == kIrqSoftware) {
+    irq_software_ = (q.wdata & 1u) != 0u;
+    return;
+  }
+  if (addr == kIrqExternal) {
+    irq_external_ = (q.wdata & 1u) != 0u;
+    return;
   }
 
   if (addr < kRamSize) {
@@ -281,3 +308,16 @@ MemResponse MemoryModel::EvaluateData(const MemRequest& q) const {
 }
 void MemoryModel::TickInstr(const MemRequest& q) { Tick(&iport_, q, true); }
 void MemoryModel::TickData(const MemRequest& q) { Tick(&dport_, q, false); }
+
+void MemoryModel::TickTimer() {
+  if (timer_countdown_ > 0) {
+    --timer_countdown_;
+    if (timer_countdown_ == 0) {
+      // The pin stays asserted until the handler clears it, which is how a
+      // real timer behaves and what makes a handler that forgets to clear it
+      // show up as a hang rather than as a single spurious trap.
+      irq_timer_ = true;
+      timer_countdown_ = -1;
+    }
+  }
+}
