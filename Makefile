@@ -159,6 +159,10 @@ riscv-tests: | $(BUILD) ## Run the rv32ui-p compliance suite
 random: | $(BUILD) ## Randomised lockstep against the golden ISS
 	@$(SCRIPTS)/run_tests.sh random
 
+.PHONY: mutation
+mutation: | $(BUILD) ## Verify the tests can detect deliberately broken RTL
+	@$(SCRIPTS)/run_tests.sh mutation
+
 .PHONY: coverage
 coverage: | $(BUILD) ## Coverage build + report
 	@$(SCRIPTS)/run_tests.sh coverage
@@ -173,7 +177,7 @@ wave: | $(BUILD) ## Rerun one test with tracing: make wave TEST=<name>
 	@$(SCRIPTS)/run_tests.sh wave $(TEST)
 
 .PHONY: test
-test: lint unit asm-tests riscv-tests sw-tests random coverage ## ACCEPTANCE GATE
+test: lint unit asm-tests riscv-tests sw-tests random mutation coverage ## ACCEPTANCE GATE
 	@echo
 	@echo "================================================"
 	@echo "  All E-Core regressions passed."
