@@ -128,6 +128,11 @@ docs/           microarchitecture, verification plan, results, lab notebook
 
 ## Documentation
 
+**Start here:** [`docs/E_CORE_REFERENCE.md`](docs/E_CORE_REFERENCE.md) — the
+complete technical reference in one file: architecture, the full instruction
+set with encodings, CSR map, trap model, memory interface, performance, area
+and verification.
+
 - [`docs/e_core_microarchitecture.md`](docs/e_core_microarchitecture.md) — datapath, hazard and stall tables, trap priority, CSR map, design justifications
 - [`docs/e_core_verification_plan.md`](docs/e_core_verification_plan.md) — test matrix, coverage numbers, known limitations
 - [`docs/e_core_results.md`](docs/e_core_results.md) — compliance pass table, CPI, stall breakdown, area estimate
