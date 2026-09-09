@@ -38,8 +38,13 @@ for src in "${TESTS[@]}"; do
   fi
   "$ROOT/scripts/gen_hex.sh" "$elf" "$OUT/$name" >/dev/null 2>&1
 
+  # Every directed test runs at zero, fixed and randomised latency. Several
+  # defects are invisible at zero wait states because the situation they break
+  # never arises -- a mishandled wrong-path fetch, a stall term that ignores
+  # ex_ready, a skid buffer that drops an instruction -- so the fixed and
+  # random configurations are part of the pass criterion, not an extra.
   ok=1
-  for waits in "0" "random:1"; do
+  for waits in "0" "2" "random:1" "random:7"; do
     log="$OUT/$name.w${waits//:/_}.log"
     if ! "$SIM" --elf "$elf" --waits="$waits" --max-cycles=1000000 > "$log" 2>&1; then
       printf "  %-28s \033[31mFAIL\033[0m (waits=%s)\n" "$name" "$waits"

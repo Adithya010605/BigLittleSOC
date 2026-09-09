@@ -26,10 +26,11 @@ case "$MODE" in
   sw)         exec "$ROOT/scripts/run_sw.sh" "$@" ;;
   riscv)      exec "$ROOT/scripts/build_riscv_tests.sh" "$@" ;;
   random)     exec "$ROOT/scripts/run_random.sh" "$@" ;;
+  mutation)   exec "$ROOT/scripts/mutation_test.sh" "$@" ;;
   coverage)   exec "$ROOT/scripts/run_coverage.sh" "$@" ;;
   wave)       exec "$ROOT/scripts/run_wave.sh" "$@" ;;
   *)
     echo "run_tests.sh: unknown mode '${MODE}'" >&2
-    echo "expected one of: unit build-core asm sw riscv random coverage wave" >&2
+    echo "expected one of: unit build-core asm sw riscv random mutation coverage wave" >&2
     exit 2 ;;
 esac
