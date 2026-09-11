@@ -6,6 +6,7 @@
 //   0x0000_0000 .. 0x0002_FFFF   unified ROM/SRAM (192 KiB), instr + data
 //   0x1000_0000                  UART transmit data   (write)
 //   0x1000_0004                  UART status          (read; bit 0 = busy)
+//   0x1100_0000                  IRQ controller       (see below)
 //   <tohost>                     simulation exit mailbox, address resolved
 //                                from the ELF symbol table, not hard-coded
 //
@@ -90,6 +91,21 @@ class MemoryModel {
   static constexpr uint32_t kUartData = kUartBase + 0x0u;
   static constexpr uint32_t kUartStatus = kUartBase + 0x4u;
 
+  // Minimal interrupt controller, enough to drive the three interrupt pins
+  // from a test program. A real CLINT arrives with the SoC in a later phase;
+  // this exists so the taken-interrupt path can be tested now.
+  //
+  //   +0x0  W  arm the timer: assert irq_timer_i after N more cycles
+  //         R  1 while the timer interrupt is asserted
+  //   +0x4  W  clear the timer interrupt
+  //   +0x8  W  bit 0 drives irq_software_i
+  //   +0xC  W  bit 0 drives irq_external_i
+  static constexpr uint32_t kIrqBase = 0x11000000u;
+  static constexpr uint32_t kIrqTimerArm = kIrqBase + 0x0u;
+  static constexpr uint32_t kIrqTimerClear = kIrqBase + 0x4u;
+  static constexpr uint32_t kIrqSoftware = kIrqBase + 0x8u;
+  static constexpr uint32_t kIrqExternal = kIrqBase + 0xCu;
+
   MemoryModel();
 
   // Loads an ELF image and resolves `tohost`. Returns false on failure.
@@ -123,6 +139,13 @@ class MemoryModel {
 
   // UART capture.
   const std::string& uart_output() const { return uart_out_; }
+
+  // Interrupt pins, sampled by the harness each cycle.
+  bool irq_timer() const { return irq_timer_; }
+  bool irq_software() const { return irq_software_; }
+  bool irq_external() const { return irq_external_; }
+  // Advances the timer countdown. Called once per simulated cycle.
+  void TickTimer();
 
   // Counters, for the results report.
   uint64_t instr_fetches() const { return instr_fetches_; }
@@ -169,6 +192,11 @@ class MemoryModel {
   uint32_t tohost_raw_ = 0;
 
   std::string uart_out_;
+
+  bool irq_timer_ = false;
+  bool irq_software_ = false;
+  bool irq_external_ = false;
+  int64_t timer_countdown_ = -1;   // -1 = disarmed
 
   uint64_t instr_fetches_ = 0;
   uint64_t data_reads_ = 0;

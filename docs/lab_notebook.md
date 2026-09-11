@@ -485,3 +485,94 @@ states:
 | x0_writes | 21 | 98 | 74 | 1.32 |
 
 Lint clean, 0 warnings, no waivers.
+
+---
+
+## 2026-09-07 — M5: CSRs, traps and interrupts
+
+Added `csr_unit.sv` (machine-mode CSR file, WARL behaviour, 64-bit counters
+plus the four custom performance counters) and `e_core_trap.sv` (exception
+prioritisation, trap entry, MRET, interrupt arbitration), wired both into S3,
+and removed the halt-on-unimplemented path that stood in for them since M2.
+The testbench gained a small interrupt controller at `0x1100_0000` so the
+taken-interrupt path can be driven from a test program.
+
+### Bug found: a trap set the redirect address but not the redirect enable
+
+**Symptom.** `csr_basic` reported a trap on `csrw misa` — correctly — and then
+carried straight on at PC+4. The handler never ran.
+
+**Root cause.** `e_core_top` muxed the redirect *address* between the trap
+target and the branch target, but `if_redirect` was still wired directly from
+the hazard unit's branch output. A trap therefore squashed the instruction and
+recorded the CSRs but never steered the PC.
+
+**Fix.** Mux both halves: `if_redirect = trap_redirect | branch_redirect` with
+the address mux beside it. Renamed the hazard output to `branch_redirect` so
+the two cannot be confused again.
+
+### Bug found: an interrupt taken on a store re-ran the store
+
+**Symptom.** `irq_timer` passed at zero wait states and hung at `--waits=2`,
+with the trap count climbing without bound. The trace showed `mcause` =
+`0x8000_0003` and `mepc` pointing at the instruction that *asserts* the
+software interrupt.
+
+**Root cause.** The trap unit took an interrupt on any committing instruction,
+including a load or store. A memory access commits at the bus when the request
+is **granted**, which is before the instruction reaches its completion cycle.
+Taking an interrupt there leaves the access already performed while `mepc`
+still points at the instruction, so `MRET` performs it a second time.
+
+For an ordinary store that is a silent double-write. Here it was a store to a
+device register that sets an interrupt line, so the sequence was: store commits
+and asserts the IRQ, interrupt taken on that same store, handler clears the
+source, MRET returns to the store, store asserts it again — a livelock. Zero
+wait states hid it because the timing never lined up that way.
+
+**Fix.** `take_irq` is qualified with `~mem_req_i`: a load or store is not
+interruptible. This costs nothing, because instructions keep flowing and the
+interrupt is simply taken on the next non-memory instruction. Synchronous
+exceptions are unaffected — those are caused *by* the instruction, and a
+faulting access is suppressed before it reaches the bus in the first place.
+
+After the fix the test reports exactly 4 traps and 980 retired instructions at
+every latency from 0 to 8 and across three random seeds — the determinism is
+the real evidence, since a residual double-execution would show up as a varying
+instruction count.
+
+### Decision: WFI is a NOP
+
+WFI is architecturally a hint. With no clock gating or low-power state to
+enter, the correct and simplest implementation is to retire it like any other
+instruction; an enabled interrupt is then taken by the normal path on a
+following instruction. This is explicitly permitted by the privileged spec.
+
+### Decision: mepc is not advanced by hardware
+
+Trap entry records the PC of the faulting or interrupted instruction. That is
+required for an interrupt (the instruction has not run and must run on return)
+and is the specified behaviour for every exception here. ECALL and EBREAK
+handlers advance `mepc` by four themselves, which is what the test handlers do.
+
+### Decision: memory side effects are suppressed for faulting accesses
+
+An instruction that will trap for a reason known before the access — an
+illegal encoding, a misaligned address, ECALL, EBREAK, a faulting fetch —
+never asserts `data_req_o`. `trap_exceptions` checks this directly: a
+misaligned store to a word previously filled with `0xFFFFFFFF` must leave it
+unchanged.
+
+### M5 results
+
+Three new directed tests, all passing at 0, 2, random:1 and random:7 latency:
+
+| Test | Checks | Covers |
+|---|---:|---|
+| `csr_basic` | 29 | CSRRW/S/C and the immediate forms; CSRRS with rs1=x0 does not write; read-only enforcement and the legality of a non-writing access to one; unimplemented address traps; mcycle/minstret monotonicity; mcountinhibit; counter writability; mstatus.MPP hardwired; mtvec mode bits forced to zero |
+| `trap_exceptions` | 30 | ECALL, EBREAK, illegal (`0x00000000`, `0xFFFFFFFF`, MUL, DIV), misaligned LW/LH/SW/SH, load and store access faults, instruction-address-misaligned via JALR, each checked for cause, mtval and mepc; a faulting store leaves memory unchanged; byte accesses never fault; execution resumes correctly through MRET |
+| `irq_timer` | 10 | interrupt suppressed while mstatus.MIE is clear but visible in mip; taken as soon as MIE is set; cause encoding for timer/software/external; MIE cleared on entry and restored by MRET; taken mid-loop with the loop result unaffected; masked by mie |
+
+`csr_unit` also has a unit testbench covering read/write/set/clear, read-only
+and unimplemented-address enforcement, WARL masking, trap and MRET side
+effects, and counter increment, inhibit and writability.

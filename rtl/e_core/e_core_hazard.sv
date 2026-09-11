@@ -84,7 +84,9 @@ module e_core_hazard
 
   // ---- redirect and trap requests ----
   input  logic                  id_take_branch_i,
-  input  logic                  ex_halt_i,
+  // Asserted when the trap unit steers the PC (trap entry or MRET). The
+  // instruction in S2 is on the wrong path and must not enter S3.
+  input  logic                  flush_i,
 
   // ---- pipeline control ----
   output logic                  ifid_accept_o,  // S2 consumes the IF/ID entry
@@ -136,10 +138,12 @@ module e_core_hazard
   // inserts the bubble.
   // --------------------------------------------------------------------
   logic id_advances;
-  assign id_advances = ifid_valid_i & ex_ready_i & ~data_hazard_stall & ~ex_halt_i;
+  assign id_advances = ifid_valid_i & ex_ready_i & ~data_hazard_stall & ~flush_i;
 
   assign ifid_accept_o = id_advances;
-  assign idex_en_o     = ex_ready_i & ~ex_halt_i;
+  // The register is still written on a flush -- with valid cleared, which is
+  // what drops the wrong-path instruction rather than letting it execute.
+  assign idex_en_o     = ex_ready_i;
   assign idex_valid_o  = id_advances;
 
   // A taken branch or jump steers the PC only when the instruction actually
@@ -147,6 +151,6 @@ module e_core_hazard
   // and re-fetch the same target for as long as the stall lasted.
   assign if_redirect_o = id_advances & id_take_branch_i;
 
-  assign stall_o = ifid_valid_i & ~id_advances & ~ex_halt_i;
+  assign stall_o = ifid_valid_i & ~id_advances & ~flush_i;
 
 endmodule : e_core_hazard
