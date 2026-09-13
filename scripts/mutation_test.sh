@@ -106,7 +106,7 @@ MUTATIONS=(
 "no_wrongpath_discard@@kill@@e_core/e_core_if_stage.sv@@        discard_d = 1'b1;@@        discard_d = 1'b0;"
 "redirect_keeps_ifid@@kill@@e_core/e_core_if_stage.sv@@      ifid_valid_d = 1'b0;\n      skid_valid_d = 1'b0;\n      pc_d         = redirect_pc_i;@@      pc_d         = redirect_pc_i;"
 "no_skid_buffer@@kill@@e_core/e_core_if_stage.sv@@          skid_valid_d = 1'b1;\n          skid_pc_d    = fetch_addr_q;@@          skid_valid_d = 1'b0;\n          skid_pc_d    = fetch_addr_q;"
-"stall_ignores_ex_ready@@kill@@e_core/e_core_hazard.sv@@assign id_advances = ifid_valid_i & ex_ready_i & ~data_hazard_stall & ~ex_halt_i;@@assign id_advances = ifid_valid_i & ~data_hazard_stall & ~ex_halt_i;"
+"stall_ignores_ex_ready@@kill@@e_core/e_core_hazard.sv@@assign id_advances = ifid_valid_i & ex_ready_i & ~data_hazard_stall & ~flush_i;@@assign id_advances = ifid_valid_i & ~data_hazard_stall & ~flush_i;"
 "ex_ready_ignores_rvalid@@kill@@e_core/e_core_ex_stage.sv@@assign ex_ready_o = ~mem_active | data_rvalid_i;@@assign ex_ready_o = 1'b1;"
 "mem_gnt_not_cleared@@kill@@e_core/e_core_ex_stage.sv@@      mem_gnt_q       <= 1'b0;\n    end else if (data_req_o && data_gnt_i) begin@@      mem_gnt_q       <= mem_gnt_q;\n    end else if (data_req_o && data_gnt_i) begin"
 

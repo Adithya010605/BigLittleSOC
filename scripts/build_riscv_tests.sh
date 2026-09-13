@@ -21,7 +21,7 @@ ISA_DIR="$THIRD/riscv-tests/isa"
 ENV_DIR="$THIRD/riscv-tests/env/p"
 LDS="$ROOT/sw/common/riscv_tests.ld"
 
-if [ ! -d "$ISA_DIR/rv64ui" ]; then
+if [ ! -d "$ISA_DIR/rv32ui" ]; then
   echo "==> riscv-tests: not checked out — run 'make riscv-tests-fetch'"
   exit 1
 fi
@@ -31,28 +31,45 @@ if [ ! -x "$SIM" ]; then echo "==> riscv-tests: simulator not built yet"; exit 0
 command -v "$RVCC" >/dev/null 2>&1 || { echo "==> riscv-tests: no RISC-V compiler ($RVCC)"; exit 1; }
 [ -f "$LDS" ] || { echo "==> riscv-tests: missing $LDS"; exit 1; }
 
-# rv32ui sources live in isa/rv64ui with a per-XLEN wrapper; upstream builds
-# rv32ui-p-<name> from the same .S with -march=rv32i. Tests that need M, A, F
-# or supervisor mode are not part of rv32ui and are simply not listed here.
-SRC_DIR="$ISA_DIR/rv64ui"
+# isa/rv32ui/<name>.S is a thin wrapper that redefines RVTEST_RV64U to the
+# 32-bit form and includes ../rv64ui/<name>.S, which is exactly how upstream
+# builds rv32ui-p-*. Using the wrappers rather than the rv64 sources directly
+# is what keeps the rv64-only tests (addiw, ld, sd, sllw, ...) out.
+SRC_DIR="$ISA_DIR/rv32ui"
 
-# fence_i is architecturally in rv32ui but requires an instruction cache to be
-# meaningful; see docs/e_core_verification_plan.md "Known limitations".
-SKIP_LIST=${RISCV_TESTS_SKIP:-"fence_i"}
+# The authoritative rv32ui list, taken verbatim from isa/rv32ui/Makefrag.
+TEST_LIST="simple add addi and andi auipc beq bge bgeu blt bltu bne fence_i \
+           jal jalr lb lbu lh lhu lw ld_st lui ma_data or ori sb sh sw st_ld \
+           sll slli slt slti sltiu sltu sra srai srl srli sub xor xori"
+
+# Documented exclusions. Both are deliberate consequences of this core's
+# specification, not defects; see docs/e_core_verification_plan.md.
+#
+#   fence_i  requires an instruction cache to be meaningful. This core has no
+#            caches, so FENCE.I is an architectural NOP and the test cannot
+#            distinguish a correct implementation from a broken one.
+#   ma_data  exercises MISALIGNED loads and stores and expects the hardware to
+#            complete them. This core traps misaligned accesses by design
+#            (specification section 2.4: "Misaligned accesses raise exceptions;
+#            do not implement hardware misalignment fixup"), and the test
+#            installs no handler to emulate them, so it cannot pass. The
+#            behaviour it would test is covered instead by tb/asm/mem_align.S
+#            and by the misaligned cases in tb/asm/trap_exceptions.S.
+SKIP_LIST=${RISCV_TESTS_SKIP:-"fence_i ma_data"}
 
 CFLAGS="-march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding \
         -fno-builtin -static -Wa,-march=rv32i_zicsr \
-        -I$ENV_DIR -I$ISA_DIR/macros/scalar -I$THIRD/riscv-tests/env"
-
-shopt -s nullglob
-SRCS=("$SRC_DIR"/*.S)
-[ ${#SRCS[@]} -eq 0 ] && { echo "==> riscv-tests: no sources found in $SRC_DIR"; exit 1; }
+        -I$ENV_DIR -I$ISA_DIR/macros/scalar"
 
 pass=0; fail=0; skip=0
 declare -a rows
 printf "==> riscv-tests rv32ui-p\n"
-for src in "${SRCS[@]}"; do
-  name=$(basename "$src" .S)
+for name in $TEST_LIST; do
+  src="$SRC_DIR/$name.S"
+  if [ ! -f "$src" ]; then
+    rows+=("$(printf '%-14s %-8s %s' "$name" "MISSING" "$src")")
+    fail=$((fail+1)); continue
+  fi
   if [[ " $SKIP_LIST " == *" $name "* ]]; then
     rows+=("$(printf '%-14s %-8s %s' "$name" "SKIP" "documented exclusion")")
     skip=$((skip+1)); continue
