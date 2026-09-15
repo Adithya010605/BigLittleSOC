@@ -89,9 +89,124 @@ defect, and both cover behaviour that is tested elsewhere.
 
 ## 3. Benchmark results
 
-_(CPI, instruction mix and stall breakdown for hello / fib / bubble_sort /
-memcpy_test, at M7)_
+All figures at zero wait states. Cycles and retired instructions are read from
+the core's own `mcycle` and `minstret`, sampled by the testbench at simulation
+exit, so they include the startup code in `sw/common/start.S`.
+
+| Program | Cycles | Retired | CPI | What it stresses |
+|---|---:|---:|---:|---|
+| `hello` | 675 | 487 | 1.386 | boot path, UART store/poll loop |
+| `bubble_sort` | 12,523 | 10,075 | 1.243 | load-use interlocks and branches, the plan's named hazard exercise |
+| `memcpy_test` | 298,242 | 235,936 | 1.264 | every source/destination alignment through the LSU |
+| `fib` | 511,036 | 473,764 | 1.079 | recursion: call/return, stack traffic, deep dependence chains |
+| `perf_counters` | 14,999 | 11,726 | 1.279 | the counter workload below |
+
+`fib` has the lowest CPI because recursive Fibonacci is dominated by
+straight-line arithmetic and calls, which sustain close to 1 IPC. `hello` has
+the highest because it is short enough that the startup code and the fetch
+pipeline fill dominate.
+
+### 3.1 Instruction mix and stall breakdown
+
+Measured by `sw/tests/perf_counters.c` over a 24-element bubble sort, using the
+core's own performance counters. The measurement window is bracketed by two
+counter samples, so startup is excluded.
+
+| Counter | CSR | Value |
+|---|---|---:|
+| Cycles | `mcycle` | 2,481 |
+| Instructions retired | `minstret` | 1,783 |
+| Stall cycles | `mhpmcounter3` | 276 |
+| Branches retired | `mhpmcounter4` | 575 |
+| Branches taken | `mhpmcounter5` | 400 |
+| Loads and stores | `mhpmcounter6` | 812 |
+
+Derived:
+
+| Metric | Value | Note |
+|---|---:|---|
+| CPI | 1.39 | |
+| Stall cycles per instruction | 0.15 | S2 held back: load-use and CSR-use interlocks, plus memory back-pressure |
+| Branch instructions | 32.2% of retired | conditional branches only; jumps are not counted |
+| Branch taken rate | 69.6% | each taken branch costs a 1-cycle flush |
+| Loads and stores | 45.5% of retired | |
+
+**Where the 0.39 cycles of overhead per instruction go.** Taken branches
+contribute `400 / 1783 = 0.22` cycles per instruction, since each costs exactly
+one flushed cycle. Stalls contribute `276 / 1783 = 0.15`. Together that is
+0.37, which accounts for essentially all of the 0.39 gap between the measured
+CPI and the ideal 1.0; the small remainder is the pipeline fill after reset.
+
+This is the expected profile for a static-not-taken machine on a
+branch-dominated workload, and it is the specific number the P-core's branch
+predictor has to beat in Phase 2.
+
+### 3.2 Counter semantics
+
+Defined in `rtl/common/csr_unit.sv` and asserted by `tb/asm/csr_perf.S`:
+
+| Counter | Increments on |
+|---|---|
+| `mcycle` | every cycle, unless `mcountinhibit.CY` |
+| `minstret` | an instruction retiring; never a flushed instruction or a stall bubble; unless `mcountinhibit.IR` |
+| `mhpmcounter3` | a cycle in which S2 held a valid instruction back |
+| `mhpmcounter4` | a retired conditional branch (jumps excluded) |
+| `mhpmcounter5` | a retired conditional branch whose condition was true |
+| `mhpmcounter6` | a retired load or store |
+
+`mhpmcounter3` measures *blocked work*, not idle time: if S2 has nothing to
+hold back — because the instruction fetch has not returned yet — no stall is
+counted. That distinction matters when comparing across memory latencies, and
+it is why `csr_perf.S` asserts the counter over a loop rather than over a
+single load-use pair.
 
 ## 4. Area estimate
 
-_(Yosys output at M8; plan target is < 5K LUTs)_
+Produced by `make synth`. Yosys's built-in Verilog front end cannot parse
+enumerated or packed-struct types in port lists, which this design uses
+throughout, so the sources are first lowered to Verilog-2005 with `sv2v` — a
+purely syntactic transformation. `scripts/synth_estimate.sh` fetches the `sv2v`
+static binary into `build/tools/` if it is not already on PATH; it needs no
+root.
+
+### 4.1 Xilinx 7-series (`synth_xilinx -family xc7 -flatten`)
+
+| Resource | Count |
+|---|---:|
+| **LUTs (LUT1–LUT6)** | **2,273** |
+| Flip-flops (FDCE) | 968 |
+| Distributed RAM (RAM32M) | 12 |
+| Carry chains (CARRY4) | 146 |
+| Wide muxes (MUXF7 / MUXF8) | 147 / 58 |
+
+**2,273 LUTs against the plan's < 5K target**, with 55% headroom.
+
+**The register file inferred as distributed RAM, which was the point.** Twelve
+RAM32M primitives hold the 32 x 32-bit array. Had it been reset — the
+conventional thing to do — it would have become 1,024 flip-flops instead, more
+than doubling the flop count and consuming LUT-RAM headroom the design does not
+otherwise need. This is the single design decision the plan's section 4.8 warns
+about, and the number confirms it went the right way.
+
+**Where the 968 flip-flops go.** The counters dominate: `mcycle` and `minstret`
+are 64-bit and the four `mhpmcounter`s are 64-bit each, which is 384 bits — a
+little under 40% of all state in the core — before any pipeline register is
+counted. That is a deliberate cost: those counters are what make the Phase 2
+P-core comparison measurable. Narrowing them to 32 bits would save roughly 192
+flops if area ever became tight.
+
+### 4.2 Generic (technology-independent)
+
+The generic pass reports 392 cells at the top level plus five submodules, with
+the flip-flop counts split across the stage modules. Full output is in
+`build/synth/generic_stat.txt`; it is included because cell counts are
+comparable across Yosys versions in a way that the Xilinx numbers are not.
+
+### 4.3 Methodology notes
+
+- The estimate is of `e_core_top` alone with `RVFI = 0`, which is the
+  synthesis configuration; with `RVFI = 1` the trace port is driven and the
+  logic is retained.
+- No timing constraint is applied and no place-and-route is run, so this is an
+  area estimate, not a frequency result. Reproducing it requires only
+  `make synth`.

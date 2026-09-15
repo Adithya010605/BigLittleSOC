@@ -4,9 +4,8 @@ A three-stage, in-order, single-issue RV32I_Zicsr core, machine mode only,
 targeting under 5K LUTs. This is the "LITTLE" core of the big.LITTLE pair in
 `RISC-V_SoC_Project_Plan.md` section 2.1.
 
-**Status:** sections 1–5 and 7 are final as of M4. Section 6 (CSR map and trap
-priority) is written at M5, and the measured numbers referenced here appear in
-`docs/e_core_results.md`.
+**Status:** complete. Measured numbers referenced here are in
+[`e_core_results.md`](e_core_results.md).
 
 ---
 
@@ -214,7 +213,81 @@ penalty**, matching the plan's "static not-taken, flush 1".
 
 ## 6. CSR map and trap priority
 
-_(written at M5, with `csr_unit.sv` and `e_core_trap.sv`)_
+### 6.1 CSR map
+
+All machine mode. A write to a read-only register, or any access to a register
+not listed here, raises illegal-instruction. `CSRRS`/`CSRRC` with `rs1 == x0`
+do not write, and so remain legal against a read-only register — the decoder
+computes that distinction and `csr_unit` acts on it.
+
+| CSR | Address | Access | Behaviour |
+|---|---|---|---|
+| `mstatus` | `0x300` | RW | `MIE` (bit 3) and `MPIE` (bit 7) writable; `MPP` (bits 12:11) hardwired `2'b11` |
+| `misa` | `0x301` | RO | `0x4000_0100` — MXL=1, extension `I` only |
+| `mie` | `0x304` | RW | only `MSIE`(3), `MTIE`(7), `MEIE`(11) implemented; other bits read zero |
+| `mtvec` | `0x305` | RW | direct mode only; the WARL mode bits are forced to zero |
+| `mcountinhibit` | `0x320` | RW | `CY` (bit 0) and `IR` (bit 2) |
+| `mscratch` | `0x340` | RW | plain register |
+| `mepc` | `0x341` | RW | bit 0 hardwired zero |
+| `mcause` | `0x342` | RW | bit 31 = interrupt, bits 4:0 = cause |
+| `mtval` | `0x343` | RW | faulting address or instruction word |
+| `mip` | `0x344` | RO | a read-only view of the three interrupt pins |
+| `mcycle` / `mcycleh` | `0xB00` / `0xB80` | RW | 64-bit cycle counter, writable |
+| `minstret` / `minstreth` | `0xB02` / `0xB82` | RW | 64-bit retired-instruction counter, writable |
+| `mhpmcounter3` / `..3h` | `0xB03` / `0xB83` | RW | stall cycles |
+| `mhpmcounter4` / `..4h` | `0xB04` / `0xB84` | RW | branch instructions |
+| `mhpmcounter5` / `..5h` | `0xB05` / `0xB85` | RW | taken branches |
+| `mhpmcounter6` / `..6h` | `0xB06` / `0xB86` | RW | loads and stores |
+| `mvendorid`, `marchid`, `mimpid` | `0xF11`–`0xF13` | RO | zero |
+| `mhartid` | `0xF14` | RO | the `HART_ID` parameter |
+
+Counter semantics are given in [`e_core_results.md`](e_core_results.md)
+section 3.2, because they are what the Phase 2 comparison depends on.
+
+### 6.2 Trap priority
+
+Highest first. `e_core_trap.sv` implements this as a priority chain, and
+`trap_exceptions.S` checks the cause, `mtval` and `mepc` of every row.
+
+| Priority | Cause | Exception | `mtval` |
+|---:|---:|---|---|
+| 1 | 0 | Instruction address misaligned | target address |
+| 2 | 1 | Instruction access fault | faulting PC |
+| 3 | 2 | Illegal instruction | the instruction word |
+| 4 | 3 | Breakpoint (`EBREAK`) | PC |
+| 5 | 4 | Load address misaligned | address |
+| 6 | 5 | Load access fault | address |
+| 7 | 6 | Store address misaligned | address |
+| 8 | 7 | Store access fault | address |
+| 9 | 11 | Environment call from M-mode | 0 |
+
+On trap: `mepc` ← the PC of the faulting instruction, `mcause`/`mtval` set,
+`mstatus.MPIE` ← `MIE`, `MIE` ← 0, PC ← `mtvec`.
+On `MRET`: PC ← `mepc`, `MIE` ← `MPIE`, `MPIE` ← 1.
+
+Hardware never advances `mepc`. That is required for an interrupt — the
+instruction has not executed and must run on return — and is the specified
+behaviour for every exception here; `ECALL` and `EBREAK` handlers advance it by
+four themselves.
+
+### 6.3 Interrupts
+
+Cause codes 3 (software), 7 (timer) and 11 (external), with `mcause` bit 31
+set. An interrupt is taken when `mstatus.MIE` is set and `mie & mip` is
+non-zero. It takes precedence over any synchronous exception, because it is
+taken *instead of* the instruction rather than because of it.
+
+**Loads and stores are not interruptible.** A memory access commits at the bus
+when the request is granted, which is before the instruction reaches its
+completion cycle. Taking an interrupt there would leave the access performed
+while `mepc` still pointed at the instruction, so `MRET` would perform it a
+second time. For an ordinary store that is a silent double-write; for a store
+to a device register it can livelock, which is how this was found. The
+interrupt is simply taken on the next non-memory instruction instead.
+
+`WFI` is implemented as a NOP. It is architecturally a hint, and with no
+low-power state to enter, retiring it normally is both correct and simplest;
+an enabled interrupt is then taken by the ordinary path.
 
 ---
 

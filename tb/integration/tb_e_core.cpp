@@ -54,6 +54,7 @@
 
 #include "disasm.h"
 #include "elf_loader.h"
+#include "golden_iss.h"
 #include "memory_model.h"
 
 namespace {
@@ -238,6 +239,20 @@ int main(int argc, char** argv) {
                  "order", "pc", "insn", "disassembly", "symbol", " effects");
   }
 
+  // Golden-ISS lockstep. The reference runs one instruction per RTL
+  // retirement (or trap) and the architectural effects are compared field by
+  // field. Cycle-dependent state is not compared: mcycle, minstret and the
+  // performance counters measure microarchitectural events that an
+  // architectural model cannot predict.
+  GoldenIss iss;
+  if (opt.lockstep) {
+    if (!iss.Load(elf, &err)) {
+      std::fprintf(stderr, "e_core_sim: %s\n", err.c_str());
+      return 2;
+    }
+  }
+  int lockstep_errors = 0;
+
   std::deque<Retirement> history;
   const size_t kHistory = 50;
   uint64_t cycle = 0;
@@ -349,6 +364,50 @@ int main(int argc, char** argv) {
         halted = true;
         halt_rec = r;
       }
+
+      if (opt.lockstep && lockstep_errors == 0) {
+        const IssStep e = iss.Step();
+        auto mismatch = [&](const char* field, uint64_t got, uint64_t exp) {
+          if (got == exp) return;
+          if (lockstep_errors++ > 0) return;
+          std::fprintf(stderr,
+                       "\ne_core_sim: LOCKSTEP MISMATCH on %s\n"
+                       "  order      : %llu\n"
+                       "  RTL  pc    : 0x%08x  insn 0x%08x  %s\n"
+                       "  ISS  pc    : 0x%08x  insn 0x%08x  %s\n"
+                       "  %-10s : RTL 0x%llx  ISS 0x%llx\n",
+                       field, static_cast<unsigned long long>(r.order), r.pc,
+                       r.insn, Disassemble(r.insn, r.pc).c_str(), e.pc, e.insn,
+                       Disassemble(e.insn, e.pc).c_str(), field,
+                       static_cast<unsigned long long>(got),
+                       static_cast<unsigned long long>(exp));
+        };
+        mismatch("pc", r.pc, e.pc);
+        mismatch("insn", r.insn, e.insn);
+        mismatch("trap", r.trap ? 1u : 0u, e.trap ? 1u : 0u);
+        if (!r.trap && !e.trap) {
+          mismatch("pc_next", r.pc_next, e.pc_next);
+          mismatch("rd_addr", r.rd, e.rd);
+          if (e.rd != 0) {
+            if (e.rd_unpredictable) {
+              iss.AdoptReg(e.rd, r.rd_value);
+            } else {
+              mismatch("rd_value", r.rd_value, e.rd_value);
+            }
+          }
+          mismatch("mem_wmask", r.mem_wmask, e.mem_wmask);
+          if (e.mem_wmask != 0) {
+            mismatch("mem_addr", r.mem_addr, e.mem_addr);
+            // Only the enabled lanes carry meaning; the rest are don't-care.
+            uint32_t mask = 0;
+            for (int l = 0; l < 4; ++l) {
+              if (e.mem_wmask & (1u << l)) mask |= 0xFFu << (8 * l);
+            }
+            mismatch("mem_wdata", r.mem_wdata & mask, e.mem_wdata & mask);
+          }
+          mismatch("mem_rmask", r.mem_rmask, e.mem_rmask);
+        }
+      }
     }
 
 #if VM_TRACE
@@ -419,7 +478,10 @@ int main(int argc, char** argv) {
   };
 
   int rc = 0;
-  if (halted) {
+  if (lockstep_errors > 0) {
+    dump_history("LOCKSTEP MISMATCH");
+    rc = 5;
+  } else if (halted) {
     std::fprintf(stderr,
                  "\ne_core_sim: CORE HALTED at pc=0x%08x insn=0x%08x (%s)\n",
                  halt_rec.pc, halt_rec.insn,
@@ -449,12 +511,13 @@ int main(int argc, char** argv) {
   }
 
   if (!opt.quiet) {
-    std::printf("e_core_sim: %s  cycles=%llu instret=%llu traps=%llu waits=%s%s\n",
+    std::printf("e_core_sim: %s  cycles=%llu instret=%llu traps=%llu waits=%s%s%s\n",
                 rc == 0 ? "PASS" : "FAIL",
                 static_cast<unsigned long long>(cycle),
                 static_cast<unsigned long long>(retired),
                 static_cast<unsigned long long>(trapped),
                 wcfg.Describe().c_str(),
+                opt.lockstep ? " lockstep=on" : "",
                 rc == 0 ? "" : "  <-- see stderr");
   }
 

@@ -272,12 +272,16 @@ package e_core_pkg;
   // Bit-reversal helper, used by the ALU to build left shifts out of its
   // single right-shift barrel shifter.
   // --------------------------------------------------------------------
+  // Written in the classic assign-to-the-function-name form with an `integer`
+  // loop variable rather than `return` and `int unsigned`. Both are valid
+  // SystemVerilog, but Yosys's front end accepts only this form, and the
+  // package has to elaborate under Yosys for `make synth` to produce an area
+  // estimate.
   function automatic logic [31:0] rev32(input logic [31:0] v);
-    logic [31:0] r;
-    for (int unsigned i = 0; i < 32; i++) begin
-      r[i] = v[31-i];
+    integer i;
+    for (i = 0; i < 32; i = i + 1) begin
+      rev32[i] = v[31-i];
     end
-    return r;
   endfunction
 
 endpackage : e_core_pkg

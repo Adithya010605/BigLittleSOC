@@ -576,3 +576,139 @@ Three new directed tests, all passing at 0, 2, random:1 and random:7 latency:
 `csr_unit` also has a unit testbench covering read/write/set/clear, read-only
 and unimplemented-address enforcement, WARL masking, trap and MRET side
 effects, and counter increment, inhibit and writability.
+
+---
+
+## 2026-09-07 — M6/M7: compliance, the golden ISS and random lockstep
+
+### rv32ui-p passed first time
+
+40 of 40 runnable tests, no RTL changes needed. That is the useful result: the
+directed suite and the mutation harness had already found everything the
+compliance suite would have. Two tests are skipped for reasons that follow from
+the specification rather than from defects, both documented in
+`docs/e_core_results.md`.
+
+The only real work was the build: `isa/rv32ui/*.S` are thin wrappers that
+redefine `RVTEST_RV64U` to its 32-bit form and include the rv64 source.
+Building from the rv64 directory directly, as the first version of the script
+did, would have pulled in `addiw`, `ld`, `sd`, `sllw` and the rest of the
+64-bit-only tests.
+
+### Decision: the golden ISS keeps its own memory
+
+Sharing the testbench's memory would be less code, and wrong: an RTL store
+could corrupt the reference before the comparison happened, which is precisely
+the class of bug lockstep exists to catch. The ISS loads the same ELF into its
+own array.
+
+### Bug in my own checker: skipping a comparison is not enough
+
+Reading `mcycle` cannot be predicted architecturally, so the first version of
+the lockstep checker skipped the `rd_value` comparison for those CSRs. The next
+run failed on `pc_next` a few instructions later: the reference had kept its
+own differing value in that register and the two machines diverged on the
+branch that used it.
+
+The fix is for the ISS to *adopt* the RTL's value rather than merely ignore it.
+Everything architectural is still compared; only the unpredictable value is
+taken on trust, and the two machines stay in step afterwards. The same applies
+to `minstret`, the performance counters and `mip`.
+
+### Result
+
+600 random programs (200 x 3 seed groups), each at zero and randomised wait
+states — 1,200 runs, all passing. Lockstep also runs clean against the whole
+directed suite and all five C programs, including 473,764 instructions of
+recursive `fib`.
+
+---
+
+## 2026-09-07 — M8: coverage, synthesis, documentation
+
+### Bug in my own coverage tool
+
+The first coverage report claimed port declarations were uncovered *line*
+points, which made no sense. `scripts/cov_summary.py` was splitting each
+coverage record on `0x01` and then treating the first character as the key and
+the rest as the value — but Verilator separates key from value with `0x02`. The
+type field was therefore never read, and every point was mislabelled. Fixed to
+partition on `0x02`.
+
+### Line coverage: one genuine gap, one tool artifact
+
+Closing the last lines needed two changes, and telling them apart mattered.
+
+The genuine gap was `e_core_trap.sv`'s instruction-access-fault arm: load and
+store access faults were tested, fetching from unmapped memory was not.
+`trap_exceptions.S` now jumps to `0x4000_0000`. The handler for that case
+cannot step over the faulting instruction the way it does for every other
+exception — `mepc` points at the unmapped address, so returning would fault
+forever — so it redirects `mepc` to a recovery label instead.
+
+The artifact was eight lines inside the decoder's `AluFromFunct3` function
+reporting zero hits while the *expression* points on the very same lines
+recorded 2.2 million. Line-coverage points inside an inlined `automatic`
+function are never incremented. Rather than write a justification for eight
+lines that provably execute on every arithmetic instruction, the function was
+restructured into combinational logic, which removes the artifact.
+
+Line coverage is now 100% on both directories, with nothing to justify.
+
+### Toggle coverage: 82%, and honest about it
+
+Toggle sits at 81–83% and cannot reach 95%. The shortfall is concentrated and
+identifiable: `mie` and `mip` are 32-bit registers with three implemented bits,
+the six 64-bit counters have upper halves that need 2^32 events to move, and
+every address in the design lives inside a 192 KiB memory so address bits 18
+and above are permanently zero. Roughly 1,300 of the 2,520 unhit points are
+structurally unreachable.
+
+`cov_summary.py` now prints the shortfall ranked by signal, so the number is
+justified from data rather than asserted, and the gate enforces 100% on line
+coverage with a documented floor on toggle. Inflating the toggle figure would
+have meant widening the memory map or running for billions of cycles, neither
+of which tests anything.
+
+### Bug found: a comment that was parsed as a lint pragma
+
+A comment beginning `// Verilator's line-coverage points...` was rejected with
+`BADVLTPRAGMA`: the simulator reads `// verilator ...` as a directive,
+case-insensitively. Reworded so the first word is not the tool's name.
+
+### Synthesis needed a front-end that understands SystemVerilog
+
+Yosys 0.66's built-in Verilog front end cannot parse enumerated or packed
+struct types in port lists. This design uses both throughout — they are what
+make the decoder's control bundle and the ALU's operator readable — so the
+choice was to rewrite every port to plain vectors or to lower the sources
+first. Lowering with `sv2v` is a purely syntactic transformation and keeps the
+RTL as written; `scripts/synth_estimate.sh` fetches the static binary into
+`build/tools/` when it is not already installed, which needs no root.
+
+The package also needed one change to elaborate under Yosys: `rev32` used
+`return` and an `int unsigned` loop variable. Both are valid SystemVerilog and
+neither is accepted by that front end, so it is written in the classic
+assign-to-the-function-name form with an `integer` index.
+
+### Area result
+
+**2,273 LUTs against the plan's < 5K target**, 968 flip-flops, and — the number
+that matters — **12 RAM32M primitives**. The register file inferred as
+distributed RAM exactly as intended. Had it been reset, it would have become
+1,024 flip-flops instead, more than doubling the flop count. That was the one
+decision the plan's section 4.8 warned about, and the synthesis result confirms
+it went the right way.
+
+The counters dominate the remaining state: `mcycle`, `minstret` and four
+64-bit `mhpmcounter`s are 384 bits between them, a little under 40% of all
+state in the core. That is a deliberate cost, since those counters are what
+make the Phase 2 comparison measurable.
+
+### Performance baseline
+
+From the core's own counters over a 24-element bubble sort: CPI 1.39, with
+0.22 cycles per instruction from taken-branch flushes and 0.15 from stalls.
+Those two account for essentially all of the gap from the ideal 1.0. This is
+the expected profile for a static-not-taken machine on a branch-heavy workload,
+and it is the specific number the P-core's branch predictor has to beat.

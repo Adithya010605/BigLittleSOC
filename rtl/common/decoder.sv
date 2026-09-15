@@ -111,22 +111,45 @@ module decoder
   assign funct7_is_zero = (funct7 == F7_ZERO);
   assign funct7_is_alt  = (funct7 == F7_SUB);
 
-  // ALU operation for the OP / OP-IMM group. `alt` selects SUB in place of ADD
-  // and SRA in place of SRL; it is only ever set for encodings where the
-  // legality checks below have already permitted funct7 = 0100000.
-  function automatic alu_op_e AluFromFunct3(input logic [2:0] f3,
-                                            input logic alt);
-    unique case (f3)
-      F3_SLL:     return ALU_SLL;
-      F3_SLT:     return ALU_SLT;
-      F3_SLTU:    return ALU_SLTU;
-      F3_XOR:     return ALU_XOR;
-      F3_SRL_SRA: return alt ? ALU_SRA : ALU_SRL;
-      F3_OR:      return ALU_OR;
-      F3_AND:     return ALU_AND;
-      default:    return alt ? ALU_SUB : ALU_ADD;   // F3_ADD_SUB
+  // ALU operation for the OP / OP-IMM group.
+  //
+  // `alu_alt` selects SUB in place of ADD and SRA in place of SRL. It is set
+  // only where instr[31:25] genuinely is a funct7 field:
+  //   * for OPCODE_OP, whenever funct7 == 0100000;
+  //   * for OPCODE_OP_IMM, ONLY for the shift-right encoding. In every other
+  //     OP-IMM form instr[31:25] is the top of the 12-bit immediate, so an
+  //     ADDI whose immediate happens to have bits 11:5 equal to 0100000 --
+  //     any immediate in [-2048,-1985] -- is still an add.
+  //
+  // Written as combinational logic rather than as a function because the
+  // line-coverage points inside an inlined `automatic` function are never
+  // incremented by the simulator, which left eight lines reported as
+  // uncovered even though the expression points on the very same lines
+  // recorded millions of hits. Restructuring removes the artifact rather than
+  // explaining it away in the coverage report.
+  logic    alu_alt;
+  alu_op_e alu_arith_op;
+
+  always_comb begin
+    unique case (opcode)
+      OPCODE_OP:     alu_alt = funct7_is_alt;
+      OPCODE_OP_IMM: alu_alt = funct7_is_alt & (funct3 == F3_SRL_SRA);
+      default:       alu_alt = 1'b0;
     endcase
-  endfunction
+  end
+
+  always_comb begin
+    unique case (funct3)
+      F3_SLL:     alu_arith_op = ALU_SLL;
+      F3_SLT:     alu_arith_op = ALU_SLT;
+      F3_SLTU:    alu_arith_op = ALU_SLTU;
+      F3_XOR:     alu_arith_op = ALU_XOR;
+      F3_SRL_SRA: alu_arith_op = alu_alt ? ALU_SRA : ALU_SRL;
+      F3_OR:      alu_arith_op = ALU_OR;
+      F3_AND:     alu_arith_op = ALU_AND;
+      default:    alu_arith_op = alu_alt ? ALU_SUB : ALU_ADD;   // F3_ADD_SUB
+    endcase
+  end
 
   // --------------------------------------------------------------------
   // Main decode
@@ -275,14 +298,7 @@ module decoder
           op_b_sel_o = OP_B_IMM;
           rf_we_o    = 1'b1;
           wb_sel_o   = WB_ALU;
-          // Only SRAI may be selected by instr[31:25]. For every other OP-IMM
-          // encoding those bits are the top of the 12-bit immediate, NOT a
-          // funct7: ADDI with an immediate whose bits 11:5 happen to equal
-          // 0100000 (i.e. any immediate in [-2048,-1985]) is still an add.
-          // Gating on funct3 here rather than passing funct7_is_alt straight
-          // through is what keeps that case correct.
-          alu_op_o   = AluFromFunct3(funct3,
-                                     funct7_is_alt && (funct3 == F3_SRL_SRA));
+          alu_op_o   = alu_arith_op;
 
           // The shift-immediate encodings carry a 5-bit shamt in instr[24:20]
           // and a fixed funct7. SLLI and SRLI require 0000000; SRAI requires
@@ -306,7 +322,7 @@ module decoder
           op_b_sel_o = OP_B_RS2;
           rf_we_o    = 1'b1;
           wb_sel_o   = WB_ALU;
-          alu_op_o   = AluFromFunct3(funct3, funct7_is_alt);
+          alu_op_o   = alu_arith_op;
 
           // Only ADD/SUB and SRL/SRA may use funct7 = 0100000. Everything else
           // demands 0000000. funct7 = 0000001 is the M extension and lands in
