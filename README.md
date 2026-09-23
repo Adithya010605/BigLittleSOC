@@ -258,6 +258,11 @@ gtkwave build/hazard_load_use.vcd
 
 `TEST` accepts the basename of anything in `tb/asm/` or `sw/tests/`.
 
+`make wave` also writes `build/<name>.trace.log` — a human-readable list of every
+instruction that executed, with its cycle number. For showing pipeline behaviour
+to an audience that is a far better prop than the waveform;
+[`docs/DEMO_AND_EXPLAINER.md`](docs/DEMO_AND_EXPLAINER.md) §4 walks through it.
+
 ### Regenerating the slide deck
 
 ```sh
@@ -456,7 +461,12 @@ because they are the ones that will surprise you when reading the RTL:
 
 ## 11. Documentation index
 
-**Start here:** [`docs/E_CORE_REFERENCE.md`](docs/E_CORE_REFERENCE.md) — the
+**If you have to present or explain this project and you did not design it,
+start with [`docs/DEMO_AND_EXPLAINER.md`](docs/DEMO_AND_EXPLAINER.md)** — the
+pipeline explained from zero, a scripted demo, the questions you will be asked,
+and a numbers cheat sheet.
+
+**For the technical detail:** [`docs/E_CORE_REFERENCE.md`](docs/E_CORE_REFERENCE.md) — the
 complete technical reference in one file (1,086 lines): architecture, the full
 instruction set with encodings, CSR map, trap model, memory interface,
 performance, area, verification, and the top-level port list.
@@ -470,6 +480,7 @@ Then, by topic:
 | [`docs/e_core_verification_plan.md`](docs/e_core_verification_plan.md) | test matrix, coverage numbers, known limitations |
 | [`docs/e_core_results.md`](docs/e_core_results.md) | compliance pass table, CPI, stall breakdown, area estimate, methodology |
 | [`docs/lab_notebook.md`](docs/lab_notebook.md) | design decisions and debugging log, one entry per session, with the root cause of every bug found |
+| [`docs/DEMO_AND_EXPLAINER.md`](docs/DEMO_AND_EXPLAINER.md) | how to demo the core and explain it to a non-specialist audience |
 
 If you are picking up Phase 2, read the plan's section 2.1 for the P-core spec,
 then `docs/e_core_results.md` section 3.1 for the baseline you have to beat.
