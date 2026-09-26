@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # Rerun a single test with waveform tracing enabled.
 #   run_wave.sh <name>
-# <name> is looked up in build/asm, build/sw, build/riscv-tests and build/random.
+# <name> is looked up in the asm, sw, riscv-tests and random build directories
+# of the core named by CORE (default e_core).
 set -uo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BUILD=${BUILD:-$ROOT/build}
 NAME=${1:?usage: run_wave.sh <test-name>}
-SIM="$BUILD/e_core_sim_trace"
+# shellcheck source=scripts/core_config.sh
+. "$ROOT/scripts/core_config.sh"
+SIM="${CORE_SIM}_trace"
 
 "$ROOT/scripts/build_core.sh" --trace || exit 1
 [ -x "$SIM" ] || { echo "tracing simulator not built"; exit 1; }
 
 ELF=""
 for d in asm sw riscv-tests random; do
-  for cand in "$BUILD/$d/$NAME.elf" "$BUILD/$d/rv32ui-p-$NAME.elf"; do
+  for cand in "$CORE_OUT/$d/$NAME.elf" "$CORE_OUT/$d/rv32ui-p-$NAME.elf" \
+              "$CORE_OUT/$d/rv32um-p-$NAME.elf"; do
     [ -f "$cand" ] && { ELF="$cand"; break 2; }
   done
 done

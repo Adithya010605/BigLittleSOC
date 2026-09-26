@@ -71,8 +71,11 @@ package e_core_pkg;
   // funct7 values that distinguish ADD/SUB and SRL/SRA
   // Only these two funct7 values are legal in RV32I. Everything else -- most
   // notably 7'b000_0001, the M extension -- is rejected by the decoder.
-  localparam logic [6:0] F7_ZERO = 7'b000_0000;
-  localparam logic [6:0] F7_SUB  = 7'b010_0000;  // also SRA
+  localparam logic [6:0] F7_ZERO   = 7'b000_0000;
+  localparam logic [6:0] F7_SUB    = 7'b010_0000;  // also SRA
+  // The M extension's funct7 under OPCODE_OP. Legal only when the decoder is
+  // elaborated with RV32M = 1 (the P-core); the E-core rejects it.
+  localparam logic [6:0] F7_MULDIV = 7'b000_0001;
 
   // Full 32-bit encodings of the privileged instructions (SYSTEM, funct3=0).
   localparam logic [31:0] INSN_ECALL  = 32'h0000_0073;
@@ -183,24 +186,23 @@ package e_core_pkg;
 
   localparam logic [11:0] CSR_MCYCLE        = 12'hB00;
   localparam logic [11:0] CSR_MINSTRET      = 12'hB02;
-  localparam logic [11:0] CSR_MHPMCOUNTER3  = 12'hB03;  // stall cycles
-  localparam logic [11:0] CSR_MHPMCOUNTER4  = 12'hB04;  // branch instructions
-  localparam logic [11:0] CSR_MHPMCOUNTER5  = 12'hB05;  // taken branches
-  localparam logic [11:0] CSR_MHPMCOUNTER6  = 12'hB06;  // load/store count
+  // The first hardware performance counter. csr_unit implements a contiguous
+  // block of NUM_HPM counters from here, mhpmcounter3 .. mhpmcounter(2+NUM_HPM),
+  // so only the base address of each half is named.
+  localparam logic [11:0] CSR_MHPMCOUNTER3  = 12'hB03;
 
   localparam logic [11:0] CSR_MCYCLEH       = 12'hB80;
   localparam logic [11:0] CSR_MINSTRETH     = 12'hB82;
   localparam logic [11:0] CSR_MHPMCOUNTER3H = 12'hB83;
-  localparam logic [11:0] CSR_MHPMCOUNTER4H = 12'hB84;
-  localparam logic [11:0] CSR_MHPMCOUNTER5H = 12'hB85;
-  localparam logic [11:0] CSR_MHPMCOUNTER6H = 12'hB86;
 
   localparam logic [11:0] CSR_MVENDORID     = 12'hF11;
   localparam logic [11:0] CSR_MARCHID       = 12'hF12;
   localparam logic [11:0] CSR_MIMPID        = 12'hF13;
   localparam logic [11:0] CSR_MHARTID       = 12'hF14;
 
-  // Custom performance counters, indexed within the mhpmcounter block.
+  // Custom performance counters, indexed within the mhpmcounter block. These
+  // four are the E-core's full set and the first four of the P-core's, with
+  // identical semantics, so the two cores can be compared counter for counter.
   localparam int unsigned PERF_STALL    = 0;  // mhpmcounter3
   localparam int unsigned PERF_BRANCH   = 1;  // mhpmcounter4
   localparam int unsigned PERF_BR_TAKEN = 2;  // mhpmcounter5

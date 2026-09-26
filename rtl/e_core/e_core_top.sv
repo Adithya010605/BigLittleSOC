@@ -314,8 +314,16 @@ module e_core_top
   // --------------------------------------------------------------------
   // Machine-mode CSR file
   // --------------------------------------------------------------------
+  logic [NUM_PERF-1:0] hpm_event;
+  assign hpm_event[PERF_STALL]    = id_stall;
+  assign hpm_event[PERF_BRANCH]   = perf_branch;
+  assign hpm_event[PERF_BR_TAKEN] = perf_branch_taken;
+  assign hpm_event[PERF_MEM]      = perf_mem;
+
   csr_unit #(
-    .HART_ID (HART_ID)
+    .HART_ID (HART_ID),
+    .MISA    (MISA_VALUE),
+    .NUM_HPM (NUM_PERF)
   ) u_csr (
     .clk_i           (clk_i),
     .rst_ni          (rst_ni),
@@ -342,10 +350,7 @@ module e_core_top
     .irq_software_i  (irq_software_i),
     .irq_external_i  (irq_external_i),
     .instr_retired_i (ex_retire),
-    .stall_i         (id_stall),
-    .branch_i        (perf_branch),
-    .branch_taken_i  (perf_branch_taken),
-    .mem_access_i    (perf_mem)
+    .hpm_event_i     (hpm_event)
   );
 
   // --------------------------------------------------------------------
