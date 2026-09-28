@@ -8,6 +8,11 @@ E-Core** — a complete, compliance-passing, 100%-line-covered RV32I_Zicsr
 processor — together with the full multi-phase plan for the SoC that gets built
 around it.
 
+> **Phase 2, the P-Core, is done and lives on the
+> [`docs/p-core-presentation`](https://github.com/Adithya010605/BigLittleSOC/tree/docs/p-core-presentation) branch**,
+> not on `main` yet. See [§1.1](#11-phase-2-the-p-core-on-branch-docsp-core-presentation)
+> for what it is and how it compares with the E-Core.
+
 The design target is a heterogeneous SoC in the shape of real Apple-Silicon-class
 parts: a small efficiency core and a wide performance core sharing one coherent
 memory fabric, with an ML accelerator and DMA hanging off the same unified
@@ -44,21 +49,110 @@ The short version of the build order, and where we are in it:
 |---|---|---|
 | 0 | Repo skeleton, build system, toolchain checks | **Done** |
 | 1 | **E-Core** — RV32I + Zicsr, 3-stage, machine mode | **Done, verified, synthesised** |
-| 2 | P-Core — RV32IM, 5-stage, branch prediction | Not started |
+| 2 | **P-Core** — RV32IM, 5-stage, branch prediction | **Done, verified, synthesised** — on branch `docs/p-core-presentation` |
 | 3 | UMA interconnect fabric (QoS NoC) | Not started |
 | 4 | Cache hierarchy + coherence | Not started |
 | 5 | ML accelerator + DMA | Not started |
 | 6 | Task migration controller + power management | Not started |
 | 7 | Integration, system verification, FPGA bring-up | Not started |
 
-Everything in `rtl/`, `tb/`, `sw/`, `scripts/` and `syn/` today is the E-Core.
-The P-core, caches, interconnect and accelerator are **not** in this tree yet —
-that is the next chunk of work, and it is what the plan document is for.
+Everything in `rtl/`, `tb/`, `sw/`, `scripts/` and `syn/` on `main` is the
+E-Core. **The P-Core source is on the `docs/p-core-presentation` branch** (see
+§1.1). The caches, interconnect and accelerator are not written yet; that is
+the next chunk of work, and it is what the plan document is for.
 
 The E-Core is not a toy: it passes the official `rv32ui-p` compliance suite,
 runs 1,200 randomised programs in lockstep against a golden instruction-set
 simulator, survives mutation testing, hits 100% line coverage, and synthesises
 to 2,273 LUTs. The numbers in section 8 are all reproducible with `make test`.
+
+### 1.1 Phase 2: the P-Core (on branch `docs/p-core-presentation`)
+
+The P-Core is the "big" core of the big.LITTLE pair. Its code is **not on
+`main` yet**; it is on the `docs/p-core-presentation` branch:
+
+```sh
+git fetch origin
+git checkout docs/p-core-presentation
+make CORE=p_core p-test     # the P-Core's full gate
+make test                   # both cores' gates + the E/P benchmark comparison
+```
+
+On that branch, `rtl/p_core/` holds the P-Core RTL, `tb/asm/p_core/` and
+`tb/unit/p_core/` its tests, and `docs/p_core_*.md` its microarchitecture,
+verification plan and results. `docs/p_core_panel_presentation.md` has every
+feature, every result and the full E-Core/P-Core comparison. Every regression
+script takes `CORE=e_core|p_core`.
+
+**P-Core at a glance**
+
+| Property | Value |
+|---|---|
+| ISA | RV32I + M + Zicsr + Zifencei, machine mode |
+| Pipeline | 5 stages: `IF` → `ID` → `EX` → `MEM` → `WB` |
+| Branch prediction | 256-entry 2-bit BHT + 64-entry direct-mapped BTB; resolved in EX, 2-cycle mispredict penalty |
+| Forwarding | EX→EX, MEM→EX, MEM→MEM (a load followed by a store of the loaded value does not stall) |
+| Multiply / divide | radix-4 Booth, 4 cycles / restoring, 33 cycles, interruptible |
+| Traps | precise, committed at MEM; the E-Core's trap unit is reused unchanged |
+| Performance counters | `mcycle`, `minstret` + 7 `mhpmcounter`s (adds mispredicts, MUL/DIV busy, interlock) |
+| Interface | **identical to the E-Core's**, so the two drop into the same SoC slot |
+
+**E-Core vs P-Core, same metrics.** Both cores were built and measured in one
+`make test` run (2026-09-26) with the same testbench, golden ISS, compiler and
+counter definitions, at zero wait states and the same clock. Speed-up = E-Core
+cycles ÷ P-Core cycles.
+
+| Metric | E-Core | P-Core | P vs E |
+|---|---:|---:|---|
+| ISA | RV32I | RV32IM + real `FENCE.I` | |
+| Pipeline | 3-stage | 5-stage | |
+| Branches | static not-taken, 1-cycle penalty on every taken branch or jump | predicted; 0 cycles if right, 2 if wrong | |
+| **Dhrystone DMIPS/MHz** | 0.843 | **0.919** | **+9.0%** |
+| Dhrystone CPI | 1.218 | **1.181** | −3.0% |
+| Dhrystone cycles (500 runs) | 337,537 | **309,584** | **1.09×** |
+| Dhrystone instructions retired | 277,029 | 262,032 | −5.4% (hardware MUL/DIV) |
+| C programs, all six, total cycles | 842,390 | **760,576** | **1.11×** |
+| `perf_counters` (MUL/DIV-heavy) | 14,999 | 7,767 | **1.93×** |
+| `bubble_sort` | 12,523 | 7,113 | 1.76× |
+| `memcpy_test` (same instruction count) | 298,242 (CPI 1.264) | 240,549 (CPI **1.020**) | 1.24× |
+| `fib` (recursion) | 511,036 | 500,623 | 1.02× |
+| Short one-pass code (40 `rv32ui` tests) | **16,426** | 18,005 | **0.91×** (E-Core faster) |
+| LUTs (Xilinx 7-series, Yosys) | **2,249**¹ | 5,273 | 2.3× larger |
+| Flip-flops | **968** | 1,907 | 2.0× larger |
+| Dhrystone per 1K LUTs | **0.375** | 0.174 | E-Core 2.1× more area-efficient |
+| Compliance | `rv32ui` 40 pass, 2 skip | `rv32ui` 41 pass + `rv32um` 8/8, 1 skip | |
+| Directed tests (× 5 latency configs) | 13 | 20 | |
+| Randomised lockstep vs golden ISS | 1,200 runs | 1,200 runs (with RV32M) | |
+| Mutation testing | 23: 16 killed, 7 equivalent | 32: 30 killed, 2 equivalent | 0 unexplained on both |
+| Line coverage | 100% | 100% | |
+| Toggle coverage (core RTL) | 82.6% | 83.2% | |
+| Fmax | not measured | not measured | needs place and route |
+
+¹ 2,249 rather than the 2,273 in §8: the synthesis flow now defines
+`SYNTHESIS`, which drops simulation-only code. Same RTL.
+
+**Reading the comparison**
+
+- On real, loop-heavy programs the P-Core does more work per clock: 1.09× on
+  Dhrystone, 1.11× over the C programs, and up to 1.93× on multiply/divide
+  code. The gain comes from two places: fewer instructions (hardware MUL/DIV
+  instead of libgcc) and lower CPI (predicted branches, and loads feeding
+  stores without a stall).
+- On short code that runs once, the E-Core is about 9% faster per clock. The
+  predictor has not learnt anything yet, and a wrong guess costs 2 cycles
+  against the E-Core's 1.
+- The P-Core costs 2.3× the LUTs, so the E-Core gives about 2.1× more
+  Dhrystone per LUT. That is the big.LITTLE trade-off: a small core for light
+  work, a bigger core for heavy work.
+- A 5-stage pipeline's main expected gain is a higher clock frequency. That is
+  not measured yet for either core (no place-and-route tool); it is the open
+  question for FPGA bring-up.
+
+Where the P-Core's Dhrystone cycles go, from its own counters (they add up
+exactly to the measured 309,584): 262,032 instructions + 18,052 mispredict
+cycles + 17,500 MUL/DIV busy cycles + 12,000 interlock cycles. Returns cause
+about 44% of the mispredicts, so a return-address stack is the obvious next
+improvement.
 
 ---
 
@@ -471,8 +565,10 @@ Then, by topic:
 | [`docs/e_core_results.md`](docs/e_core_results.md) | compliance pass table, CPI, stall breakdown, area estimate, methodology |
 | [`docs/lab_notebook.md`](docs/lab_notebook.md) | design decisions and debugging log, one entry per session, with the root cause of every bug found |
 
-If you are picking up Phase 2, read the plan's section 2.1 for the P-core spec,
-then `docs/e_core_results.md` section 3.1 for the baseline you have to beat.
+The P-Core's documents (`docs/p_core_microarchitecture.md`,
+`docs/p_core_verification_plan.md`, `docs/p_core_results.md`,
+`docs/p_core_panel_presentation.md`) are on the `docs/p-core-presentation`
+branch; see §1.1.
 
 ---
 
@@ -521,16 +617,13 @@ you are probably running make from the wrong directory.
 
 ## 14. Roadmap
 
-The immediate next piece of work is **Phase 2: the P-Core** — RV32IM, 5-stage,
-with a branch predictor. The E-Core gives it three things it needs:
+**Phase 2, the P-Core, is complete** on the `docs/p-core-presentation` branch
+(§1.1), and merging it into `main` is the next step. It reused the E-Core's
+core-agnostic verification infrastructure (golden ISS, random generator,
+mutation harness, memory model) and its memory-port protocol, and it is
+measured against the E-Core's baseline in the comparison table in §1.1.
 
-- a verification infrastructure (golden ISS, random generator, mutation harness,
-  memory model) that is core-agnostic and can be pointed at the new core;
-- a memory-port protocol already designed to sit behind a cache;
-- a measured baseline — CPI 1.24 on bubble sort, 2,273 LUTs — to be compared
-  against.
-
-After that, Phase 3 builds the interconnect that both cores plug into, and the
+Next, Phase 3 builds the interconnect that both cores plug into, and the
 project starts being a SoC rather than a processor. Full detail, including the
 timeline and risk analysis, in
 [`RISC-V_SoC_Project_Plan.md`](RISC-V_SoC_Project_Plan.md).
