@@ -7,13 +7,18 @@ set -uo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BUILD=${BUILD:-$ROOT/build}
-SIM="$BUILD/e_core_sim"
-OUT="$BUILD/random"
 PYTHON=${PYTHON:-python3}
-mkdir -p "$OUT"
 
 # shellcheck source=scripts/toolchain.sh
 . "$ROOT/scripts/toolchain.sh"
+# shellcheck source=scripts/core_config.sh
+. "$ROOT/scripts/core_config.sh"
+SIM="$CORE_SIM"
+OUT="$CORE_OUT/random"
+mkdir -p "$OUT"
+# With the M extension the generator also emits multiplies and divides.
+GEN_ARGS=()
+[ "$CORE" = p_core ] && GEN_ARGS+=(--rv32m --extended)
 
 NPROG=${1:-${RANDOM_NPROG:-200}}
 NSEED=${2:-${RANDOM_NSEED:-3}}
@@ -27,14 +32,14 @@ if [ ! -x "$SIM" ]; then echo "==> random: simulator not built yet"; exit 0; fi
 command -v "$RVCC" >/dev/null 2>&1 || { echo "==> random: no RISC-V compiler ($RVCC)"; exit 1; }
 
 pass=0; fail=0; failed=()
-printf "==> randomised lockstep: %d programs x %d seeds x {0, random} waits\n" "$NPROG" "$NSEED"
+printf "==> randomised lockstep (%s): %d programs x %d seeds x {0, random} waits\n" "$CORE" "$NPROG" "$NSEED"
 for seed_base in $(seq 1 "$NSEED"); do
   for i in $(seq 1 "$NPROG"); do
     seed=$(( seed_base * 100000 + i ))
     name="rnd_${seed}"
     asm="$OUT/$name.S"
     elf="$OUT/$name.elf"
-    "$PYTHON" "$GEN" --seed "$seed" --out "$asm" || { fail=$((fail+1)); failed+=("$name:gen"); continue; }
+    "$PYTHON" "$GEN" --seed "$seed" "${GEN_ARGS[@]}" --out "$asm" || { fail=$((fail+1)); failed+=("$name:gen"); continue; }
     if ! "$RVCC" $RVCFLAGS -T "$LDS" -o "$elf" "$asm" ${RVLIBS:--lgcc} > "$OUT/$name.build.log" 2>&1; then
       printf "  %-14s \033[31mASM FAIL\033[0m\n" "$name"
       head -15 "$OUT/$name.build.log" | sed 's/^/      /'

@@ -1,13 +1,19 @@
 // ============================================================================
-// tb_e_core.cpp — Verilator harness for the E-Core.
+// tb_core.cpp — Verilator harness for either core.
 //
-// Drives rtl/e_core/e_core_top.sv against tb/integration/memory_model.*,
-// loading a program from an ELF file and terminating on the `tohost` store.
+// Drives rtl/e_core/e_core_top.sv or rtl/p_core/p_core_top.sv against
+// tb/integration/memory_model.*, loading a program from an ELF file and
+// terminating on the `tohost` store. Both cores have the same ports, so the
+// harness is the same; building with -DCORE_P selects the P-core, and with it
+// the golden ISS configuration (RV32IM, seven event counters) that matches.
 //
 // Usage:
-//   e_core_sim --elf=PROG.elf [options]
+//   e_core_sim | p_core_sim --elf=PROG.elf [options]
 //     --waits=0 | --waits=N | --waits=random[:SEED]
 //                          memory latency model (default 0)
+//     --dwaits=SPEC        override the data port's latency alone, same
+//                          syntax (e.g. --waits=0 --dwaits=3: fast fetch,
+//                          slow data)
 //     --max-cycles=N       timeout, default 1,000,000
 //     --trace=FILE.vcd     waveform dump (only in a --trace build)
 //     --log=FILE           per-instruction retirement trace
@@ -38,7 +44,19 @@
 // memory_model.h and in the RTL header.
 // ============================================================================
 
+#ifdef CORE_P
+#include "Vp_core_top.h"
+using CoreTop = Vp_core_top;
+#define SIM_NAME "p_core_sim"
+constexpr bool kIssRv32m = true;
+constexpr int kIssNumHpm = 7;
+#else
 #include "Ve_core_top.h"
+using CoreTop = Ve_core_top;
+#define SIM_NAME "e_core_sim"
+constexpr bool kIssRv32m = false;
+constexpr int kIssNumHpm = 4;
+#endif
 #include "verilated.h"
 
 #if VM_TRACE
@@ -63,6 +81,7 @@ namespace {
 struct Options {
   std::string elf_path;
   std::string waits = "0";
+  std::string dwaits;
   std::string trace_path;
   std::string log_path;
   std::string uart_path;
@@ -91,6 +110,8 @@ bool ParseArgs(int argc, char** argv, Options* o, std::string* error) {
       o->elf_path = argv[++i];
     } else if (StartsWith(a, "--waits=", &v)) {
       o->waits = v;
+    } else if (StartsWith(a, "--dwaits=", &v)) {
+      o->dwaits = v;
     } else if (StartsWith(a, "--max-cycles=", &v)) {
       o->max_cycles = std::strtoull(v, nullptr, 0);
     } else if (StartsWith(a, "--trace=", &v)) {
@@ -184,32 +205,42 @@ int main(int argc, char** argv) {
   Options opt;
   std::string err;
   if (!ParseArgs(argc, argv, &opt, &err)) {
-    std::fprintf(stderr, "e_core_sim: %s\n", err.c_str());
-    std::fprintf(stderr, "usage: e_core_sim --elf=PROG.elf [--waits=...] "
+    std::fprintf(stderr, SIM_NAME ": %s\n", err.c_str());
+    std::fprintf(stderr, "usage: " SIM_NAME " --elf=PROG.elf [--waits=...] "
                          "[--max-cycles=N] [--trace=F] [--log=F]\n");
     return 2;
   }
 
   ElfImage elf;
   if (!elf.Load(opt.elf_path, &err)) {
-    std::fprintf(stderr, "e_core_sim: %s\n", err.c_str());
+    std::fprintf(stderr, SIM_NAME ": %s\n", err.c_str());
     return 2;
   }
 
   WaitConfig wcfg;
   if (!WaitConfig::Parse(opt.waits, &wcfg, &err)) {
-    std::fprintf(stderr, "e_core_sim: %s\n", err.c_str());
+    std::fprintf(stderr, SIM_NAME ": %s\n", err.c_str());
     return 2;
   }
 
   MemoryModel mem;
   mem.SetWaits(wcfg);
+  if (!opt.dwaits.empty()) {
+    WaitConfig dcfg;
+    if (!WaitConfig::Parse(opt.dwaits, &dcfg, &err)) {
+      std::fprintf(stderr, SIM_NAME ": %s\n", err.c_str());
+      return 2;
+    }
+    mem.SetDataWaits(dcfg);
+    // Reported as "<fetch>/data=<data>" wherever the latency is printed.
+    wcfg.label_suffix = "/data=" + dcfg.Describe();
+  }
   if (!mem.LoadElf(elf, &err)) {
-    std::fprintf(stderr, "e_core_sim: %s\n", err.c_str());
+    std::fprintf(stderr, SIM_NAME ": %s\n", err.c_str());
     return 2;
   }
 
-  auto* top = new Ve_core_top;
+  auto* top = new CoreTop;
 
 #if VM_TRACE
   VerilatedVcdC* vcd = nullptr;
@@ -222,7 +253,7 @@ int main(int argc, char** argv) {
 #else
   if (!opt.trace_path.empty()) {
     std::fprintf(stderr,
-                 "e_core_sim: --trace given but this binary was built without "
+                 SIM_NAME ": --trace given but this binary was built without "
                  "tracing; use 'make wave TEST=<name>'\n");
     return 2;
   }
@@ -232,7 +263,7 @@ int main(int argc, char** argv) {
   if (!opt.log_path.empty()) {
     logf = std::fopen(opt.log_path.c_str(), "w");
     if (logf == nullptr) {
-      std::fprintf(stderr, "e_core_sim: cannot write %s\n", opt.log_path.c_str());
+      std::fprintf(stderr, SIM_NAME ": cannot write %s\n", opt.log_path.c_str());
       return 2;
     }
     std::fprintf(logf, "%8s %6s  %-10s  %-8s  %-28s %-24s%s\n", "cycle",
@@ -245,9 +276,10 @@ int main(int argc, char** argv) {
   // performance counters measure microarchitectural events that an
   // architectural model cannot predict.
   GoldenIss iss;
+  iss.Configure(kIssRv32m, kIssNumHpm);
   if (opt.lockstep) {
     if (!iss.Load(elf, &err)) {
-      std::fprintf(stderr, "e_core_sim: %s\n", err.c_str());
+      std::fprintf(stderr, SIM_NAME ": %s\n", err.c_str());
       return 2;
     }
   }
@@ -371,7 +403,7 @@ int main(int argc, char** argv) {
           if (got == exp) return;
           if (lockstep_errors++ > 0) return;
           std::fprintf(stderr,
-                       "\ne_core_sim: LOCKSTEP MISMATCH on %s\n"
+                       "\n" SIM_NAME ": LOCKSTEP MISMATCH on %s\n"
                        "  order      : %llu\n"
                        "  RTL  pc    : 0x%08x  insn 0x%08x  %s\n"
                        "  ISS  pc    : 0x%08x  insn 0x%08x  %s\n"
@@ -483,13 +515,13 @@ int main(int argc, char** argv) {
     rc = 5;
   } else if (halted) {
     std::fprintf(stderr,
-                 "\ne_core_sim: CORE HALTED at pc=0x%08x insn=0x%08x (%s)\n",
+                 "\n" SIM_NAME ": CORE HALTED at pc=0x%08x insn=0x%08x (%s)\n",
                  halt_rec.pc, halt_rec.insn,
                  Disassemble(halt_rec.insn, halt_rec.pc).c_str());
     dump_history("CORE HALTED");
     rc = 3;
   } else if (timeout) {
-    std::fprintf(stderr, "\ne_core_sim: TIMEOUT after %llu cycles\n",
+    std::fprintf(stderr, "\n" SIM_NAME ": TIMEOUT after %llu cycles\n",
                  static_cast<unsigned long long>(cycle));
     dump_history("TIMEOUT");
     rc = 4;
@@ -500,7 +532,7 @@ int main(int argc, char** argv) {
     // 1 would call check 0 a pass and check 1 a failure, which is why the
     // comparison is against the raw word.
     std::fprintf(stderr,
-                 "\ne_core_sim: PROGRAM FAILED, tohost=%u (raw 0x%08x)\n",
+                 "\n" SIM_NAME ": PROGRAM FAILED, tohost=%u (raw 0x%08x)\n",
                  mem.exit_code(), mem.tohost_raw());
     std::fprintf(stderr,
                  "  The riscv-tests convention encodes a failing check n as "
@@ -511,7 +543,7 @@ int main(int argc, char** argv) {
   }
 
   if (!opt.quiet) {
-    std::printf("e_core_sim: %s  cycles=%llu instret=%llu traps=%llu waits=%s%s%s\n",
+    std::printf(SIM_NAME ": %s  cycles=%llu instret=%llu traps=%llu waits=%s%s%s\n",
                 rc == 0 ? "PASS" : "FAIL",
                 static_cast<unsigned long long>(cycle),
                 static_cast<unsigned long long>(retired),

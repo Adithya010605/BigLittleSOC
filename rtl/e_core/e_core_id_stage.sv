@@ -92,10 +92,16 @@ module e_core_id_stage
   logic       csr_en;
   csr_op_e    csr_op;
   logic       csr_read, csr_write;
-  logic       ecall, ebreak, mret, wfi, fence;
+  logic       ecall, ebreak, mret, wfi, fence, fence_i;
+  logic       md_en;
+  logic [2:0] md_op;
   logic       illegal_instr;
 
-  decoder u_decoder (
+  // RV32M = 0: this core has no multiplier or divider, so the decoder rejects
+  // the M extension and md_en is constant zero.
+  decoder #(
+    .RV32M (1'b0)
+  ) u_decoder (
     .instr_i         (ifid_instr_i),
     .rs1_addr_o      (rs1_addr_o),
     .rs2_addr_o      (rs2_addr_o),
@@ -122,11 +128,14 @@ module e_core_id_stage
     .csr_use_imm_o   (csr_use_imm_o),
     .csr_read_o      (csr_read),
     .csr_write_o     (csr_write),
+    .md_en_o         (md_en),
+    .md_op_o         (md_op),
     .ecall_o         (ecall),
     .ebreak_o        (ebreak),
     .mret_o          (mret),
     .wfi_o           (wfi),
     .fence_o         (fence),
+    .fence_i_o       (fence_i),
     .illegal_instr_o (illegal_instr)
   );
 
@@ -234,6 +243,9 @@ module e_core_id_stage
   // not itself consume.
   // --------------------------------------------------------------------
   logic unused_id;
-  assign unused_id = ^{cmp_result_unused};
+  // md_en/md_op are always zero here (RV32M = 0). FENCE.I is left an
+  // architectural NOP on this core, as it always has been; the resulting
+  // rv32ui fence_i exclusion is documented in e_core_verification_plan.md.
+  assign unused_id = ^{cmp_result_unused, md_en, md_op, fence_i};
 
 endmodule : e_core_id_stage

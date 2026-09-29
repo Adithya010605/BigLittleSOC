@@ -44,7 +44,7 @@ std::string WaitConfig::Describe() const {
   } else {
     std::snprintf(buf, sizeof(buf), "fixed(%u)", fixed);
   }
-  return std::string(buf);
+  return std::string(buf) + label_suffix;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +61,17 @@ void MemoryModel::SetWaits(const WaitConfig& cfg) {
   // between fetch and load/store.
   iport_ = Port{};
   dport_ = Port{};
+  iport_.cfg = cfg;
+  dport_.cfg = cfg;
   iport_.rng = cfg.seed * 6364136223846793005ULL + 1442695040888963407ULL;
   dport_.rng = cfg.seed * 2862933555777941757ULL + 3037000493ULL;
   DrawDelays(&iport_);
+  DrawDelays(&dport_);
+}
+
+void MemoryModel::SetDataWaits(const WaitConfig& cfg) {
+  dport_.cfg = cfg;
+  dport_.rng = cfg.seed * 2862933555777941757ULL + 3037000493ULL;
   DrawDelays(&dport_);
 }
 
@@ -75,12 +83,12 @@ uint32_t MemoryModel::NextRandom(Port* p) const {
 }
 
 void MemoryModel::DrawDelays(Port* p) {
-  if (waits_.mode == WaitConfig::kRandom) {
-    p->gnt_wait = static_cast<int>(NextRandom(p) % (waits_.max_random + 1));
-    p->rv_wait = static_cast<int>(NextRandom(p) % (waits_.max_random + 1));
+  if (p->cfg.mode == WaitConfig::kRandom) {
+    p->gnt_wait = static_cast<int>(NextRandom(p) % (p->cfg.max_random + 1));
+    p->rv_wait = static_cast<int>(NextRandom(p) % (p->cfg.max_random + 1));
   } else {
-    p->gnt_wait = static_cast<int>(waits_.fixed);
-    p->rv_wait = static_cast<int>(waits_.fixed);
+    p->gnt_wait = static_cast<int>(p->cfg.fixed);
+    p->rv_wait = static_cast<int>(p->cfg.fixed);
   }
 }
 
