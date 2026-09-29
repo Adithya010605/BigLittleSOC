@@ -1,5 +1,5 @@
 // ============================================================================
-// golden_iss.h — architectural RV32I_Zicsr interpreter.
+// golden_iss.h — architectural RV32I_Zicsr / RV32IM_Zicsr interpreter.
 //
 // A straightforward instruction-at-a-time reference model: register file,
 // memory, machine-mode CSRs and trap semantics, with no pipeline, no stalls
@@ -11,6 +11,11 @@
 // sharing the testbench's. Sharing would let an RTL store corrupt the
 // reference before the comparison happened, which is exactly the class of bug
 // lockstep is meant to catch.
+//
+// The same model serves both cores. Configure() selects the ISA and the size
+// of the event-counter block to match the core under test: the E-core is
+// RV32I with four counters, the P-core RV32IM with seven. With the M extension
+// off, every M encoding traps as illegal, exactly as the E-core must.
 //
 // Cycle-dependent CSRs (mcycle, minstret and the performance counters) are
 // modelled but deliberately excluded from comparison: they count
@@ -53,6 +58,13 @@ class GoldenIss {
   static constexpr uint32_t kUartData = 0x10000000u;
   static constexpr uint32_t kUartStatus = 0x10000004u;
 
+  // Selects the ISA (M extension on or off) and how many mhpmcounters exist.
+  // Call before Load(); the default is the E-core's configuration.
+  void Configure(bool rv32m, int num_hpm) {
+    rv32m_ = rv32m;
+    num_hpm_ = num_hpm;
+  }
+
   bool Load(const ElfImage& elf, std::string* error);
 
   // Executes one instruction and reports its architectural effects.
@@ -80,6 +92,11 @@ class GoldenIss {
   uint32_t CsrRead(uint32_t addr, bool* illegal) const;
   void CsrWrite(uint32_t addr, uint32_t value, bool* illegal);
   void EnterTrap(uint32_t cause, uint32_t tval, uint32_t epc);
+  bool IsHpm(uint32_t addr) const;
+  static uint32_t MulDiv(uint32_t f3, uint32_t a, uint32_t b);
+
+  bool rv32m_ = false;
+  int num_hpm_ = 4;
 
   std::vector<uint32_t> mem_;
   uint32_t x_[32] = {0};

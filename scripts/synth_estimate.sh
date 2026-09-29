@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Yosys area estimate for the E-Core.
+# Yosys area estimate for both cores (or CORE=e_core|p_core).
 #
 # Yosys's built-in Verilog front end cannot parse enumerated or packed-struct
 # types in port lists. This design uses both throughout -- they are what makes
@@ -48,24 +48,29 @@ fi
 echo "==> sv2v: $("$SV2V" --version)"
 
 mkdir -p "$BUILD/synth"
-
-# The package must come first: everything else refers to its types.
-RTL=("$ROOT/rtl/common/e_core_pkg.sv")
-for f in "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/e_core/*.sv; do
-  [ "$f" = "$ROOT/rtl/common/e_core_pkg.sv" ] && continue
-  RTL+=("$f")
-done
-
-echo "==> lowering ${#RTL[@]} SystemVerilog files to Verilog-2005"
-"$SV2V" --write="$BUILD/synth/e_core_flat.v" "${RTL[@]}"
-
-echo "==> yosys"
 cd "$ROOT"
-"$YOSYS" -q -l "$BUILD/synth/yosys.log" "$ROOT/syn/e_core_synth.ys"
 
-echo
-echo "=================== generic cell estimate ==================="
-cat "$BUILD/synth/generic_stat.txt"
-echo
-echo "============== Xilinx 7-series LUT estimate ================="
-cat "$BUILD/synth/xilinx_stat.txt"
+# Both cores, or the one named by CORE.
+if [ -n "${CORE:-}" ]; then CORES=("$CORE"); else CORES=(e_core p_core); fi
+
+for c in "${CORES[@]}"; do
+  CORE=$c
+  # shellcheck source=scripts/core_config.sh
+  . "$ROOT/scripts/core_config.sh"
+  mapfile -t RTL < <(core_rtl_files)
+
+  echo "==> $CORE: lowering ${#RTL[@]} SystemVerilog files to Verilog-2005"
+  "$SV2V" --define=SYNTHESIS --write="$BUILD/synth/${CORE}_flat.v" "${RTL[@]}"
+
+  echo "==> $CORE: yosys"
+  "$YOSYS" -q -l "$BUILD/synth/${CORE}_yosys.log" "$ROOT/syn/${CORE}_synth.ys"
+
+  # The E-core's report files keep the names they have always had.
+  if [ "$CORE" = e_core ]; then pre=""; else pre="${CORE}_"; fi
+  echo
+  echo "=================== $CORE: generic cell estimate ==================="
+  cat "$BUILD/synth/${pre}generic_stat.txt"
+  echo
+  echo "============== $CORE: Xilinx 7-series LUT estimate ================="
+  cat "$BUILD/synth/${pre}xilinx_stat.txt"
+done

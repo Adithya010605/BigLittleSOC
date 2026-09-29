@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build the integration-level Verilator simulator (tb/integration/tb_e_core.cpp
-# driving rtl/e_core/e_core_top.sv). Produces build/e_core_sim.
+# Build the integration-level Verilator simulator for the core selected by
+# CORE (see core_config.sh): tb/integration/tb_core.cpp driving e_core_top or
+# p_core_top. Produces build/<core>_sim.
 #
 #   build_core.sh [--trace] [--coverage]
 set -uo pipefail
@@ -8,6 +9,8 @@ set -uo pipefail
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BUILD=${BUILD:-$ROOT/build}
 VERILATOR=${VERILATOR:-verilator}
+# shellcheck source=scripts/core_config.sh
+. "$ROOT/scripts/core_config.sh"
 
 TRACE=0; COV=0; SUFFIX=""
 for a in "$@"; do
@@ -18,46 +21,34 @@ for a in "$@"; do
   esac
 done
 
-TOP="$ROOT/rtl/e_core/e_core_top.sv"
-if [ ! -f "$TOP" ]; then
-  echo "==> e_core: rtl/e_core/e_core_top.sv not present yet"
-  exit 0
-fi
-
-# The package must be compiled first: every other file references its types,
-# and `ls` would sort the names rather than preserve this order.
+mapfile -t RTL < <(core_rtl_files)
 shopt -s nullglob
-PKG="$ROOT/rtl/common/e_core_pkg.sv"
-RTL=("$PKG")
-for f in "$ROOT"/rtl/common/*.sv "$ROOT"/rtl/e_core/*.sv; do
-  [ "$f" = "$PKG" ] && continue
-  RTL+=("$f")
-done
 TBSRC=("$ROOT"/tb/integration/*.cpp)
-if [ ${#TBSRC[@]} -eq 0 ]; then
-  echo "==> e_core: no integration testbench sources yet"
-  exit 0
-fi
 
-OBJDIR="$BUILD/obj_core$SUFFIX"
-BIN="e_core_sim$SUFFIX"
+# The E-core keeps its historical object-directory names.
+if [ "$CORE" = e_core ]; then OBJDIR="$BUILD/obj_core$SUFFIX"; else OBJDIR="$BUILD/obj_${CORE}$SUFFIX"; fi
+BIN="${CORE}_sim$SUFFIX"
+LOG="$BUILD/build_${CORE}$SUFFIX.log"
 EXTRA=()
 [ $TRACE -eq 1 ] && EXTRA+=(--trace --trace-structs --trace-depth 8)
 [ $COV   -eq 1 ] && EXTRA+=(--coverage)
+# The P-core carries simulation assertions (p_core_top.sv); --assert makes a
+# failing one stop the run.
+[ "$CORE" = p_core ] && EXTRA+=(--assert)
 
 mkdir -p "$BUILD"
 echo "==> building $BIN"
 "$VERILATOR" --cc --exe --build -j 0 -Wall \
-  -I"$ROOT/rtl/common" -I"$ROOT/rtl/e_core" \
-  --Mdir "$OBJDIR" --top-module e_core_top \
+  "${CORE_INC[@]}" \
+  --Mdir "$OBJDIR" --top-module "$CORE_TOP" \
   --x-assign unique --x-initial unique \
   -GRVFI=1 \
-  -CFLAGS "-std=c++17 -O2 -Wall -I$ROOT/tb/integration" \
+  -CFLAGS "-std=c++17 -O2 -Wall -I$ROOT/tb/integration $CORE_CFLAGS" \
   "${EXTRA[@]}" \
   -o "$BUILD/$BIN" \
-  "${RTL[@]}" "${TBSRC[@]}" > "$BUILD/build_core$SUFFIX.log" 2>&1 || {
-    echo "   BUILD FAILED — see $BUILD/build_core$SUFFIX.log"
-    tail -40 "$BUILD/build_core$SUFFIX.log" | sed 's/^/     /'
+  "${RTL[@]}" "${TBSRC[@]}" > "$LOG" 2>&1 || {
+    echo "   BUILD FAILED — see $LOG"
+    tail -40 "$LOG" | sed 's/^/     /'
     exit 1
   }
 echo "   -> $BUILD/$BIN"

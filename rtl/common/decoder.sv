@@ -1,7 +1,13 @@
 // ============================================================================
 // decoder.sv
 //
-// RV32I_Zicsr instruction decoder. Purely combinational.
+// RV32I_Zicsr instruction decoder, with optional M extension. Purely
+// combinational.
+//
+// RV32M selects the instruction set: 0 (the E-core) rejects every M-extension
+// encoding as illegal; 1 (the P-core) decodes MUL/MULH/MULHSU/MULHU and
+// DIV/DIVU/REM/REMU, reporting them on md_en_o with the operation in md_op_o.
+// Everything else is identical between the two elaborations.
 //
 // Outputs are individual named ports rather than a packed `ctrl_t` struct so
 // that the unit testbench can observe each control signal directly instead of
@@ -11,19 +17,23 @@
 // DECODING IS EXHAUSTIVE AND CLOSED. Every 32-bit word either matches one of
 // the encodings below or asserts illegal_instr_o -- there is no silent-NOP
 // fallback. In particular:
-//   * the M extension (funct7 = 0000001 under OP) is rejected, since this core
-//     implements multiply and divide in software;
+//   * with RV32M = 0 the M extension (funct7 = 0000001 under OP) is rejected,
+//     since that core implements multiply and divide in software;
 //   * compressed instructions (instr[1:0] != 2'b11) are rejected;
 //   * reserved funct3 values within otherwise-valid opcodes are rejected
 //     (e.g. LOAD funct3 = 3'b011, BRANCH funct3 = 3'b010);
 //   * FENCE and FENCE.I decode to an architectural NOP rather than trapping,
-//     because this core has no caches and no store buffer to order, but they
-//     must not be treated as unknown either.
+//     because neither core has caches or a store buffer to order, but they
+//     must not be treated as unknown either. FENCE.I is additionally flagged on
+//     fence_i_o: the P-core prefetches instructions several stages ahead of
+//     the store that might modify them, so it refetches after a FENCE.I.
 // ============================================================================
 
 module decoder
   import e_core_pkg::*;
-(
+#(
+  parameter bit RV32M = 1'b0
+) (
   input  logic [31:0]           instr_i,
 
   // Register operands
@@ -67,12 +77,17 @@ module decoder
   output logic                  csr_read_o,     // the CSR is actually read
   output logic                  csr_write_o,    // the CSR is actually written
 
+  // M extension (RV32M = 1 only; constant zero otherwise)
+  output logic                  md_en_o,        // a multiply or divide
+  output logic [2:0]            md_op_o,        // == funct3: MUL .. REMU
+
   // System / privileged
   output logic                  ecall_o,
   output logic                  ebreak_o,
   output logic                  mret_o,
   output logic                  wfi_o,
   output logic                  fence_o,
+  output logic                  fence_i_o,      // FENCE.I specifically
 
   output logic                  illegal_instr_o
 );
@@ -107,9 +122,12 @@ module decoder
   // --------------------------------------------------------------------
   // funct7 legality for register-register ALU ops: only 0000000 is allowed,
   // except SUB and SRA which use 0100000. 0000001 is the M extension.
-  logic funct7_is_zero, funct7_is_alt;
+  logic funct7_is_zero, funct7_is_alt, funct7_is_md;
   assign funct7_is_zero = (funct7 == F7_ZERO);
   assign funct7_is_alt  = (funct7 == F7_SUB);
+  // Tied to the parameter so that with RV32M = 0 the M-extension arm below is
+  // unreachable and the encoding falls through to illegal, exactly as before.
+  assign funct7_is_md   = RV32M & (funct7 == F7_MULDIV);
 
   // ALU operation for the OP / OP-IMM group.
   //
@@ -180,11 +198,14 @@ module decoder
     csr_use_imm_o   = 1'b0;
     csr_read_o      = 1'b0;
     csr_write_o     = 1'b0;
+    md_en_o         = 1'b0;
+    md_op_o         = funct3;
     ecall_o         = 1'b0;
     ebreak_o        = 1'b0;
     mret_o          = 1'b0;
     wfi_o           = 1'b0;
     fence_o         = 1'b0;
+    fence_i_o       = 1'b0;
     illegal_instr_o = 1'b0;
 
     if (!is_32bit_encoding) begin
@@ -325,14 +346,23 @@ module decoder
           alu_op_o   = alu_arith_op;
 
           // Only ADD/SUB and SRL/SRA may use funct7 = 0100000. Everything else
-          // demands 0000000. funct7 = 0000001 is the M extension and lands in
-          // the else-branch below, which is exactly the required behaviour:
-          // MUL, MULH, DIV, REM and friends raise illegal-instruction.
+          // demands 0000000, apart from funct7 = 0000001, the M extension, under
+          // which all eight funct3 values are defined (md_op_o is funct3 by
+          // default). When RV32M = 0, funct7_is_md is constant zero, so
+          // md_en_o stays low and the encoding is caught by the final
+          // else-branch: MUL, MULH, DIV, REM and friends raise
+          // illegal-instruction, which is the E-core's required behaviour.
+          //
+          // md_en_o is a plain assignment rather than a branch of its own on
+          // purpose: a branch taken only when RV32M = 1 would be dead code in
+          // the E-core's elaboration, and each core's line coverage is
+          // required to be 100%.
+          md_en_o = funct7_is_md;
           if (funct7_is_alt) begin
             if (!(funct3 == F3_ADD_SUB || funct3 == F3_SRL_SRA)) begin
               illegal_instr_o = 1'b1;
             end
-          end else if (!funct7_is_zero) begin
+          end else if (!(funct7_is_zero || funct7_is_md)) begin
             illegal_instr_o = 1'b1;
           end
         end
@@ -342,8 +372,12 @@ module decoder
         // architecturally correct as a NOP. They must not trap.
         OPCODE_MISC_MEM: begin
           unique case (funct3)
-            F3_FENCE, F3_FENCE_I: fence_o = 1'b1;
-            default:              illegal_instr_o = 1'b1;
+            F3_FENCE:   fence_o = 1'b1;
+            F3_FENCE_I: begin
+              fence_o   = 1'b1;
+              fence_i_o = 1'b1;
+            end
+            default:    illegal_instr_o = 1'b1;
           endcase
         end
 
@@ -424,6 +458,8 @@ module decoder
       mret_o      = 1'b0;
       wfi_o       = 1'b0;
       fence_o     = 1'b0;
+      fence_i_o   = 1'b0;
+      md_en_o     = 1'b0;
       rs1_used_o  = 1'b0;
       rs2_used_o  = 1'b0;
     end

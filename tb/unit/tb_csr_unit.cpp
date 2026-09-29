@@ -4,11 +4,25 @@
 // Coverage: read/write/set/clear semantics, read-only enforcement, the
 // unimplemented-address trap, WARL masking, trap entry and MRET side effects,
 // and counter increment/inhibit/writability.
+//
+// The same harness checks both elaborations of the unit. Built plain it
+// expects the E-core parameters; tb_csr_unit_p.cpp defines TB_NUM_HPM and
+// TB_MISA and includes this file to check the P-core's.
 // ============================================================================
 #include "Vcsr_unit.h"
 #include "tb_common.h"
 
 #include <cinttypes>
+
+#ifndef TB_NUM_HPM
+#define TB_NUM_HPM 4
+#endif
+#ifndef TB_MISA
+#define TB_MISA 0x40000100u
+#endif
+#ifndef TB_NAME
+#define TB_NAME "csr_unit"
+#endif
 
 enum : uint8_t { CSR_OP_RW = 0, CSR_OP_RS = 1, CSR_OP_RC = 2 };
 
@@ -16,8 +30,7 @@ enum : uint16_t {
   MSTATUS = 0x300, MISA = 0x301, MIE = 0x304, MTVEC = 0x305,
   MCOUNTINHIBIT = 0x320, MSCRATCH = 0x340, MEPC = 0x341, MCAUSE = 0x342,
   MTVAL = 0x343, MIP = 0x344, MCYCLE = 0xB00, MINSTRET = 0xB02,
-  MHPM3 = 0xB03, MHPM4 = 0xB04, MHPM5 = 0xB05, MHPM6 = 0xB06,
-  MCYCLEH = 0xB80, MINSTRETH = 0xB82,
+  MHPM3 = 0xB03, MCYCLEH = 0xB80, MINSTRETH = 0xB82, MHPM3H = 0xB83,
   MVENDORID = 0xF11, MARCHID = 0xF12, MIMPID = 0xF13, MHARTID = 0xF14,
 };
 
@@ -30,10 +43,7 @@ static void Idle() {
   g_dut->trap_i = 0;
   g_dut->mret_i = 0;
   g_dut->instr_retired_i = 0;
-  g_dut->stall_i = 0;
-  g_dut->branch_i = 0;
-  g_dut->branch_taken_i = 0;
-  g_dut->mem_access_i = 0;
+  g_dut->hpm_event_i = 0;
 }
 
 static void Tick() {
@@ -144,7 +154,7 @@ int main(int argc, char** argv) {
   tb::Group("writes gated by commit and by csr_write_i");
 
   // ---------------- read-only registers ----------------
-  tb::CheckEq<uint32_t>("misa value", Read(MISA), 0x40000100u);
+  tb::CheckEq<uint32_t>("misa value", Read(MISA), TB_MISA);
   tb::CheckEq<uint32_t>("mvendorid", Read(MVENDORID), 0u);
   tb::CheckEq<uint32_t>("marchid", Read(MARCHID), 0u);
   tb::CheckEq<uint32_t>("mimpid", Read(MIMPID), 0u);
@@ -298,26 +308,61 @@ int main(int argc, char** argv) {
   tb::CheckEq<uint32_t>("minstreth is writable", Read(MINSTRETH), 9u);
   tb::Group("mcycle / minstret / mcountinhibit");
 
-  // ---------------- custom performance counters ----------------
-  Access(MHPM3, CSR_OP_RW, 0u, true);
-  Access(MHPM4, CSR_OP_RW, 0u, true);
-  Access(MHPM5, CSR_OP_RW, 0u, true);
-  Access(MHPM6, CSR_OP_RW, 0u, true);
-  for (int i = 0; i < 3; ++i) {
-    dut.stall_i = 1;
-    dut.branch_i = 1;
-    dut.branch_taken_i = (i == 0) ? 1 : 0;
-    dut.mem_access_i = 1;
+  // ---------------- event counters ----------------
+  // Each counter must count its own event bit and nothing else. Counter i is
+  // pulsed on exactly (i + 1) of 2 * TB_NUM_HPM cycles, so every counter ends
+  // on a distinct value and a crossed wire between two of them shows up.
+  const int n = TB_NUM_HPM;
+  for (int i = 0; i < n; ++i) {
+    Access(static_cast<uint16_t>(MHPM3 + i), CSR_OP_RW, 0u, true);
+  }
+  for (int c = 0; c < 2 * n; ++c) {
+    uint32_t ev = 0;
+    for (int i = 0; i < n; ++i) {
+      if (c <= i) ev |= 1u << i;
+    }
+    dut.hpm_event_i = ev;
     dut.eval();
     Tick();
     Idle();
     dut.eval();
   }
-  tb::CheckEq<uint32_t>("mhpmcounter3 counts stalls", Read(MHPM3), 3u);
-  tb::CheckEq<uint32_t>("mhpmcounter4 counts branches", Read(MHPM4), 3u);
-  tb::CheckEq<uint32_t>("mhpmcounter5 counts taken branches", Read(MHPM5), 1u);
-  tb::CheckEq<uint32_t>("mhpmcounter6 counts memory accesses", Read(MHPM6), 3u);
-  tb::Group("custom performance counters");
+  for (int i = 0; i < n; ++i) {
+    char w[64];
+    std::snprintf(w, sizeof(w), "mhpmcounter%d counts its own event", 3 + i);
+    tb::CheckEq<uint32_t>(w, Read(static_cast<uint16_t>(MHPM3 + i)),
+                          static_cast<uint32_t>(i + 1));
+  }
+  // The high halves are independent, writable registers.
+  for (int i = 0; i < n; ++i) {
+    Access(static_cast<uint16_t>(MHPM3H + i), CSR_OP_RW,
+           0x100u + static_cast<uint32_t>(i), true);
+  }
+  for (int i = 0; i < n; ++i) {
+    char w[64];
+    std::snprintf(w, sizeof(w), "mhpmcounter%dh readback", 3 + i);
+    tb::CheckEq<uint32_t>(w, Read(static_cast<uint16_t>(MHPM3H + i)),
+                          0x100u + static_cast<uint32_t>(i));
+  }
+  // A carry out of the low half reaches the high half.
+  Access(MHPM3, CSR_OP_RW, 0xFFFFFFFFu, true);
+  Access(MHPM3H, CSR_OP_RW, 0u, true);
+  dut.hpm_event_i = 1u;
+  dut.eval();
+  Tick();
+  Idle();
+  dut.eval();
+  tb::CheckEq<uint32_t>("mhpmcounter3 low wraps", Read(MHPM3), 0u);
+  tb::CheckEq<uint32_t>("mhpmcounter3 carries into high", Read(MHPM3H), 1u);
+  // The block ends exactly at NUM_HPM: the next address up is unimplemented
+  // in both halves, and so is the reserved 0xB01 just below it.
+  tb::Check(IllegalFor(static_cast<uint16_t>(MHPM3 + n), false),
+            "the counter past the last implemented one must be illegal");
+  tb::Check(IllegalFor(static_cast<uint16_t>(MHPM3H + n), false),
+            "the high half past the last implemented one must be illegal");
+  tb::Check(IllegalFor(0xB01u, false), "0xB01 must be illegal");
+  tb::Check(IllegalFor(0xB81u, false), "0xB81 must be illegal");
+  tb::Group("event counters: count, high halves, carry, block bounds");
 
-  return tb::Report("csr_unit");
+  return tb::Report(TB_NAME);
 }

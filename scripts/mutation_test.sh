@@ -17,6 +17,11 @@
 # dropping the x0 write mask, losing the JALR LSB clear, mishandling a
 # wrong-path fetch. These are the bugs this microarchitecture actually invites.
 #
+# Each core has its own table (CORE=e_core, the default, or CORE=p_core) and
+# its own list of detecting programs. The P-core's list adds the compliance
+# tests that exercise what it adds, and a few randomised programs run in
+# lockstep against the golden ISS.
+#
 # Usage: mutation_test.sh [--waits=SPEC] [name ...]
 # ============================================================================
 set -uo pipefail
@@ -24,9 +29,11 @@ set -uo pipefail
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BUILD=${BUILD:-$ROOT/build}
 VERILATOR=${VERILATOR:-verilator}
-WORK="$BUILD/mutation"
+# shellcheck source=scripts/core_config.sh
+. "$ROOT/scripts/core_config.sh"
+if [ "$CORE" = e_core ]; then WORK="$BUILD/mutation"; else WORK="$CORE_OUT/mutation"; fi
 
-WAITS_LIST=(0 2 "random:7")
+WAITS_LIST=(0 2 "random:7" "0/d3")
 SELECT=()
 for a in "$@"; do
   case "$a" in
@@ -57,6 +64,7 @@ done
 #          behaviour is tested at all. An `equiv` mutation that unexpectedly
 #          gets killed also fails this script, since that means the
 #          justification is wrong.
+if [ "$CORE" = e_core ]; then
 MUTATIONS=(
 # ---- forwarding -------------------------------------------------------------
 # The write-first register file and the explicit S3->S2 forward muxes deliver
@@ -123,19 +131,116 @@ EXTRA_EDITS=(
 "x0_fully_writable@@common/regfile.sv@@    if (raddr_a_i == {REG_ADDR_W{1'b0}}) begin\n      rdata_a_o = {XLEN{1'b0}};\n    end else if (bypass_a) begin@@    if (bypass_a) begin"
 )
 
-TESTS=(m2_basic hazard_raw hazard_load_use branch_basic branch_hazard jump_link mem_align x0_writes)
+TESTS=()
+for t in m2_basic hazard_raw hazard_load_use branch_basic branch_hazard jump_link mem_align x0_writes; do
+  TESTS+=("$BUILD/asm/$t.elf")
+done
 
-# The ELFs are built by run_asm.sh; make sure they exist.
+else   # ---------------------------- P-core ---------------------------------
+
+# Most P-core mutations below break correctness and must be killed by an
+# architectural check. Several break only PERFORMANCE -- the predictor, the
+# store-data interlock exemption, the multiplier's result hold -- and a core
+# with such a bug still computes the right answers, just more slowly. They
+# are expected to be killed all the same, by the exact event-counter checks
+# in branch_predict.S, fence_i.S and p_perf.S. That is deliberate: a
+# performance feature nothing measures is a performance feature nothing
+# verifies.
+MUTATIONS=(
+# ---- forwarding into EX -----------------------------------------------------
+"no_fwd_ex_ex@@kill@@p_core/p_core_hazard.sv@@    if (mem_fwd_ok && ex_rs1_addr_i == mem_rd_i) begin@@    if (1'b0 && ex_rs1_addr_i == mem_rd_i) begin"
+"no_fwd_mem_ex_rs2@@kill@@p_core/p_core_hazard.sv@@    end else if (wb_writes && ex_rs2_addr_i == wb_rd_i) begin@@    end else if (1'b0 && ex_rs2_addr_i == wb_rd_i) begin"
+"fwd_ignores_x0@@kill@@p_core/p_core_hazard.sv@@  assign mem_writes = mem_valid_i & mem_rf_we_i & (mem_rd_i != '0);@@  assign mem_writes = mem_valid_i & mem_rf_we_i;"
+"no_operand_refresh@@kill@@p_core/p_core_ex_stage.sv@@      rs1_q       <= rs1_fwd;\n      rs2_q       <= rs2_fwd;@@      rs1_q       <= rs1_q;\n      rs2_q       <= rs2_q;"
+# A load's value in MEM is its address. Letting EX forward it is harmless
+# only because the interlock keeps every consumer that would use it out of EX
+# -- except a store's data operand, which MEM repairs from WB. So this is an
+# equivalent mutant: the interlock and the MEM repair together make the
+# exclusion redundant. late_fwd_and_no_repair removes the repair too and must
+# be killed.
+"late_fwd_allowed@@equiv@@p_core/p_core_hazard.sv@@  assign mem_fwd_ok = mem_writes & ~mem_late_i;@@  assign mem_fwd_ok = mem_writes;"
+"late_fwd_and_no_repair@@kill@@p_core/p_core_hazard.sv@@  assign mem_fwd_ok = mem_writes & ~mem_late_i;@@  assign mem_fwd_ok = mem_writes;"
+
+# ---- interlock --------------------------------------------------------------
+"no_interlock@@kill@@p_core/p_core_hazard.sv@@  assign interlock = ifid_valid_i & (@@  assign interlock = 1'b0 & ("
+"interlock_ignores_mem@@kill@@p_core/p_core_hazard.sv@@      (mem_late_i & ~mem_ready_i & (rs1_on_mem@@      (1'b0 & ~mem_ready_i & (rs1_on_mem"
+# CSR lateness is stated twice: once for the instruction in EX (driving the
+# interlock) and once for the instruction in MEM (gating MEM -> EX forwarding
+# and the interlock's second term). The MEM copy alone is redundant for a CSR:
+# a CSR access always completes in its first MEM cycle, so the interlock's
+# second term never needs it, and the EX-stage interlock has already kept
+# every consumer out of EX until the CSR reaches WB -- except a store's data,
+# which MEM repairs from WB. Dropping CSRs from the MEM copy is therefore an
+# equivalent mutant. Dropping them from the EX copy lets a consumer into EX
+# alongside the CSR and must be killed.
+"csr_not_late_in_mem@@equiv@@p_core/p_core_mem_stage.sv@@  assign late_o  = (ctrl_q.base.mem_req & ~ctrl_q.base.mem_we) | ctrl_q.base.csr_en;@@  assign late_o  = (ctrl_q.base.mem_req & ~ctrl_q.base.mem_we);"
+"csr_not_late_in_ex@@kill@@p_core/p_core_top.sv@@    .ex_late_i       ((ex_ctrl.base.mem_req & ~ex_ctrl.base.mem_we) |\n                      ex_ctrl.base.csr_en),@@    .ex_late_i       ((ex_ctrl.base.mem_req & ~ex_ctrl.base.mem_we)),"
+# Performance only: store data stalls instead of using MEM -> MEM.
+"no_store_exemption@@kill@@p_core/p_core_hazard.sv@@  assign rs2_needed_in_ex = ~id_is_store_i;@@  assign rs2_needed_in_ex = 1'b1;"
+
+# ---- MEM -> MEM store data ----------------------------------------------------
+"no_mem_mem_fwd@@kill@@p_core/p_core_mem_stage.sv@@  assign st_fwd     = wb_valid_q & wb_rf_we_q & (wb_rd_q != '0) & (wb_rd_q == rs2_addr_q);@@  assign st_fwd     = 1'b0;"
+"no_store_refresh@@kill@@p_core/p_core_mem_stage.sv@@      rs2_q               <= store_data;@@      rs2_q               <= rs2_q;"
+
+# ---- flushes and advance -------------------------------------------------------
+"no_mispredict_flush@@kill@@p_core/p_core_hazard.sv@@  assign flush_ex_o   = ex_advance_o & ex_mispredict_i;@@  assign flush_ex_o   = 1'b0;"
+"wrongpath_enters_ex@@kill@@p_core/p_core_hazard.sv@@                        ~flush_mem_i & ~flush_ex_o;@@                        ~flush_mem_i;"
+"trap_keeps_ex@@kill@@p_core/p_core_hazard.sv@@  assign idex_en_o     = ex_free | flush_mem_i;@@  assign idex_en_o     = ex_free;"
+"ex_overwritten@@kill@@p_core/p_core_hazard.sv@@  assign ex_free      = ~ex_valid_i | ex_advance_o;@@  assign ex_free      = 1'b1;"
+"no_fence_i_refetch@@kill@@p_core/p_core_top.sv@@  assign flush_mem      = trap_redirect | mem_fence_i;@@  assign flush_mem      = trap_redirect;"
+"trapped_insn_writes_rf@@kill@@p_core/p_core_mem_stage.sv@@      wb_valid_q <= retire_o;\n      wb_rf_we_q <= retire_o & ctrl_q.base.rf_we;@@      wb_valid_q <= commit_o;\n      wb_rf_we_q <= commit_o & ctrl_q.base.rf_we;"
+
+# ---- fetch --------------------------------------------------------------------
+# Fetch ignores the prediction while IF/ID still records it: EX then checks
+# against a pc fetch never used, and wrong-path code runs.
+"fetch_ignores_prediction@@kill@@p_core/p_core_if_stage.sv@@        pc_d = pred.npc;@@        pc_d = fetch_addr_q + 32'd4;"
+"no_wrongpath_discard@@kill@@p_core/p_core_if_stage.sv@@        discard_d = 1'b1;@@        discard_d = 1'b0;"
+
+# ---- branch prediction (performance only) ---------------------------------------
+"predict_never_taken@@kill@@p_core/p_core_bpu.sv@@  assign pred_taken_o   = pred_btb_hit_o & (btb_jump[l_btb_idx] | pred_bht_o[1]);@@  assign pred_taken_o   = 1'b0;"
+"mispredict_always@@kill@@p_core/p_core_ex_stage.sv@@  assign mispredict_o        = valid_q & ~target_misaligned_o & (npc_o != pred_q.npc);@@  assign mispredict_o        = valid_q & ~target_misaligned_o;"
+"bht_never_trained@@kill@@p_core/p_core_bpu.sv@@  assign bht_we    = upd_en_i & upd_is_branch_i;@@  assign bht_we    = 1'b0;"
+"btb_ignores_tag@@kill@@p_core/p_core_bpu.sv@@  assign pred_btb_hit_o = btb_valid_q[l_btb_idx] & (btb_tag[l_btb_idx] == l_tag);@@  assign pred_btb_hit_o = btb_valid_q[l_btb_idx];"
+"btb_no_invalidate@@kill@@p_core/p_core_bpu.sv@@  assign btb_inval = upd_en_i & ~upd_is_jump_i & ~upd_is_branch_i & upd_btb_hit_i;@@  assign btb_inval = 1'b0;"
+
+# ---- multiply and divide -----------------------------------------------------
+"mul_no_unsigned_fix@@kill@@p_core/p_core_mul.sv@@  assign correction = (~b_signed & b_i[31]) ? {a_ext[31:0], 32'd0} : 64'd0;@@  assign correction = 64'd0;"
+"mulhsu_signed_b@@kill@@p_core/p_core_mul.sv@@  assign b_signed = (op == MD_MUL) | (op == MD_MULH);@@  assign b_signed = (op != MD_MULHU);"
+# Performance only: a result EX cannot take at once is dropped and recomputed.
+"mul_result_not_held@@kill@@p_core/p_core_mul.sv@@      done_q   <= ~ack_i;@@      done_q   <= 1'b0;"
+"div_no_zero_case@@kill@@p_core/p_core_div.sv@@      div_zero_q <= (b_i == 32'd0);@@      div_zero_q <= 1'b0;"
+"div_quotient_sign@@kill@@p_core/p_core_div.sv@@      q_neg_q    <= a_neg ^ b_neg;@@      q_neg_q    <= a_neg;"
+"div_not_killed@@kill@@p_core/p_core_ex_stage.sv@@  p_core_div u_div (\n    .clk_i    (clk_i),\n    .rst_ni   (rst_ni),\n    .start_i  (is_div),\n    .kill_i   (flush_i),@@  p_core_div u_div (\n    .clk_i    (clk_i),\n    .rst_ni   (rst_ni),\n    .start_i  (is_div),\n    .kill_i   (1'b0),"
+)
+
+EXTRA_EDITS=(
+"late_fwd_and_no_repair@@p_core/p_core_mem_stage.sv@@  assign st_fwd     = wb_valid_q & wb_rf_we_q & (wb_rd_q != '0) & (wb_rd_q == rs2_addr_q);@@  assign st_fwd     = 1'b0;"
+"fwd_ignores_x0@@p_core/p_core_hazard.sv@@  assign wb_writes  = wb_valid_i & wb_rf_we_i & (wb_rd_i != '0);@@  assign wb_writes  = wb_valid_i & wb_rf_we_i;"
+)
+
+TESTS=()
+shopt -s nullglob
+for e in "$CORE_OUT"/asm/*.elf; do TESTS+=("$e"); done
+for t in fence_i jal jalr; do TESTS+=("$CORE_OUT/riscv-tests/rv32ui-p-$t.elf"); done
+for t in mul mulh mulhsu mulhu div divu rem remu; do
+  TESTS+=("$CORE_OUT/riscv-tests/rv32um-p-$t.elf")
+done
+# A few randomised programs, checked instruction by instruction against the
+# golden ISS: the lockstep: prefix turns lockstep on for that run.
+for e in $(ls "$CORE_OUT"/random/*.elf 2>/dev/null | head -8); do TESTS+=("lockstep:$e"); done
+fi
+
+# The ELFs are built by the regular suites; make sure they exist.
 for t in "${TESTS[@]}"; do
-  if [ ! -f "$BUILD/asm/$t.elf" ]; then
-    echo "mutation_test: build the assembly tests first (make asm-tests)" >&2
+  if [ ! -f "${t#lockstep:}" ]; then
+    echo "mutation_test: missing ${t#lockstep:} -- run the asm, riscv and random suites first" >&2
     exit 2
   fi
 done
 
 mkdir -p "$WORK"
-printf "==> mutation testing: %d tests x %d latency configs (%s) per mutation\n" \
-       "${#TESTS[@]}" "${#WAITS_LIST[@]}" "${WAITS_LIST[*]}"
+printf "==> mutation testing (%s): %d tests x %d latency configs (%s) per mutation\n" \
+       "$CORE" "${#TESTS[@]}" "${#WAITS_LIST[@]}" "${WAITS_LIST[*]}"
 
 killed=0; survived=0; broken=0; equiv=0
 declare -a survivors
@@ -189,21 +294,19 @@ PY
 
   objdir="$WORK/obj_$name"
   rm -rf "$objdir"
-  RTL=("$WORK/rtl/common/e_core_pkg.sv")
-  for f in "$WORK"/rtl/common/*.sv "$WORK"/rtl/e_core/*.sv; do
-    [ "$f" = "$WORK/rtl/common/e_core_pkg.sv" ] && continue
-    RTL+=("$f")
-  done
+  mapfile -t RTL < <(core_rtl_files "$WORK/rtl")
+  MFLAGS=()
+  [ "$CORE" = p_core ] && MFLAGS+=(--assert)
 
   # A mutation frequently leaves a signal unread or a parameter unused. That
   # is a lint concern, not a behavioural one, so those checks are relaxed here
   # only -- 'make lint' still holds the real design to zero warnings.
   if ! "$VERILATOR" --cc --exe --build -j 0 \
         -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-UNOPTFLAT -Wno-WIDTHEXPAND \
-        -I"$WORK/rtl/common" -I"$WORK/rtl/e_core" \
-        --Mdir "$objdir" --top-module e_core_top -GRVFI=1 \
+        -I"$WORK/rtl/common" -I"$WORK/rtl/e_core" -I"$WORK/rtl/p_core" \
+        --Mdir "$objdir" --top-module "$CORE_TOP" -GRVFI=1 "${MFLAGS[@]}" \
         --x-assign unique --x-initial unique \
-        -CFLAGS "-std=c++17 -O1 -I$ROOT/tb/integration" \
+        -CFLAGS "-std=c++17 -O1 -I$ROOT/tb/integration $CORE_CFLAGS" \
         -o "$WORK/sim_$name" \
         "${RTL[@]}" "$ROOT"/tb/integration/*.cpp \
         > "$WORK/$name.build.log" 2>&1; then
@@ -221,10 +324,16 @@ PY
   # as killed if ANY of them detects it.
   detected_by=""
   for t in "${TESTS[@]}"; do
+    elf=${t#lockstep:}
+    extra=()
+    [ "$elf" != "$t" ] && extra+=(--lockstep)
+    tname=$(basename "$elf" .elf)
     for w in "${WAITS_LIST[@]}"; do
-      if ! "$WORK/sim_$name" --elf "$BUILD/asm/$t.elf" --waits="$w" \
+      wf=(--waits="$w")
+      [[ "$w" == */d* ]] && wf=(--waits="${w%%/d*}" --dwaits="${w##*/d}")
+      if ! "$WORK/sim_$name" --elf "$elf" "${wf[@]}" "${extra[@]}" \
             --max-cycles=500000 --quiet > /dev/null 2>&1; then
-        detected_by="$detected_by $t@$w"
+        detected_by="$detected_by $tname@$w"
         break
       fi
     done

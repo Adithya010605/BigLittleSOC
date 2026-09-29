@@ -11,9 +11,19 @@ key and the rest as the value -- silently mislabels every point, because the
 value is separated from the key by 0x02, not by position. That mistake made
 port declarations show up as uncovered *line* points.
 
-Reports hit/total and a percentage for each of rtl/common and rtl/e_core, plus
-every zero-count point so uncovered lines can be justified in
-docs/e_core_verification_plan.md.
+Reports hit/total and a percentage for each source directory -- by default
+rtl/common and rtl/e_core, or those given as a second, comma-separated
+argument -- plus every zero-count point so uncovered lines can be justified
+in the verification plans.
+
+    cov_summary.py merged.dat [scope,scope,...]
+
+A scope is a directory, optionally followed by '+' and extra paths that are
+counted as part of it. The P-core passes
+    rtl/common,rtl/p_core+rtl/e_core/e_core_trap.sv
+because it instantiates the E-core's trap unit: that file is part of the
+P-core as built, exactly as it is part of rtl/e_core for the E-core, and its
+points belong with the rest of the core rather than in a bucket of their own.
 """
 
 import re
@@ -21,6 +31,11 @@ import sys
 from collections import defaultdict
 
 DIRS = ("rtl/common", "rtl/e_core")
+EXTRA = {}   # scope -> extra paths counted as part of it
+if len(sys.argv) > 2:
+    scopes = [d for d in sys.argv[2].split(",") if d]
+    DIRS = tuple(sc.split("+")[0] for sc in scopes)
+    EXTRA = {sc.split("+")[0]: sc.split("+")[1:] for sc in scopes}
 
 # Line coverage is the enforced gate: every line of this design is reachable
 # by a program, so anything short of 100% is a real hole in the test suite.
@@ -68,7 +83,7 @@ def parse(path):
 
 def bucket(fname):
     for d in DIRS:
-        if d in fname:
+        if d in fname or any(x in fname for x in EXTRA.get(d, ())):
             return d
     return None
 

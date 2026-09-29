@@ -1,53 +1,38 @@
 #!/usr/bin/env bash
-# Verilator lint over every RTL file that currently exists.
+# Verilator lint of both cores.
 #
-# The bar is: --lint-only -Wall, zero warnings, no -Wno-fatal escape hatch.
-# When e_core_top.sv exists it is forced as the top module so that unconnected
-# top-level ports are checked properly; before then the available modules are
-# linted as-is, which is what makes the bar meaningful at every milestone
-# rather than only at the end.
+# The bar is: --lint-only -Wall, zero warnings, no -Wno-fatal escape hatch and
+# no waiver of any kind. Each core is linted as its own design, with its top
+# module forced so that unconnected top-level ports are checked, and with every
+# file it uses -- including the shared package, which is what makes
+# UNUSEDPARAM meaningful: an unused package constant is invisible to a
+# per-file lint. The P-core is additionally linted with RVFI enabled, since
+# that elaboration reads signals the default one does not.
+#
+#   lint.sh            both cores
+#   CORE=p_core lint.sh   one core
 set -uo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 VERILATOR=${VERILATOR:-verilator}
 
-PKG="$ROOT/rtl/common/e_core_pkg.sv"
-shopt -s nullglob
-COMMON=("$ROOT"/rtl/common/*.sv)
-CORE=("$ROOT"/rtl/e_core/*.sv)
+if [ -n "${CORE:-}" ]; then CORES=("$CORE"); else CORES=(e_core p_core); fi
 
-FILES=()
-[ -f "$PKG" ] && FILES+=("$PKG")
-for f in "${COMMON[@]}" "${CORE[@]}"; do
-  [ "$f" = "$PKG" ] && continue
-  FILES+=("$f")
+rc=0
+for c in "${CORES[@]}"; do
+  CORE=$c
+  # shellcheck source=scripts/core_config.sh
+  . "$ROOT/scripts/core_config.sh"
+  mapfile -t FILES < <(core_rtl_files)
+  for rvfi in 0 1; do
+    echo "==> lint: $CORE_TOP (RVFI=$rvfi), ${#FILES[@]} file(s)"
+    if "$VERILATOR" --lint-only -Wall "${CORE_INC[@]}" \
+         --top-module "$CORE_TOP" -GRVFI=$rvfi "${FILES[@]}"; then
+      echo "    lint clean (0 warnings)"
+    else
+      echo "    LINT FAILED"
+      rc=1
+    fi
+  done
 done
-
-if [ ${#FILES[@]} -eq 0 ]; then
-  echo "==> lint: no RTL yet — nothing to lint"
-  exit 0
-fi
-
-# With e_core_top present there is a single unambiguous top and no waiver of
-# any kind is used. Before it exists, rtl/ is a library of independent modules,
-# so Verilator legitimately reports MULTITOP; that one warning is suppressed
-# rather than splitting the lint per file, because a combined pass is what
-# makes UNUSEDPARAM meaningful across the shared package -- an unused package
-# constant is invisible to a per-file lint.
-TOPARG=()
-if [ -f "$ROOT/rtl/e_core/e_core_top.sv" ]; then
-  TOPARG=(--top-module e_core_top)
-else
-  TOPARG=(-Wno-MULTITOP)
-fi
-
-echo "==> lint: ${#FILES[@]} file(s)"
-if "$VERILATOR" --lint-only -Wall \
-     -I"$ROOT/rtl/common" -I"$ROOT/rtl/e_core" \
-     "${TOPARG[@]}" "${FILES[@]}"; then
-  echo "    lint clean (0 warnings)"
-  exit 0
-else
-  echo "    LINT FAILED"
-  exit 1
-fi
+exit $rc

@@ -96,11 +96,54 @@ void GoldenIss::Store32(uint32_t addr, uint32_t value, uint8_t be, bool* err) {
   }
 }
 
+// True for an implemented event counter, either half: mhpmcounter3 .. and
+// mhpmcounter3h .., num_hpm_ of each.
+bool GoldenIss::IsHpm(uint32_t addr) const {
+  const uint32_t n = static_cast<uint32_t>(num_hpm_);
+  return (addr >= 0xB03u && addr < 0xB03u + n) ||
+         (addr >= 0xB83u && addr < 0xB83u + n);
+}
+
+// The M extension, written directly from the ISA manual's definitions using
+// 64-bit host arithmetic -- deliberately nothing like the RTL's Booth
+// multiplier or restoring divider, so the two cannot share a mistake.
+uint32_t GoldenIss::MulDiv(uint32_t f3, uint32_t a, uint32_t b) {
+  const int64_t sa = static_cast<int32_t>(a);
+  const int64_t sb = static_cast<int32_t>(b);
+  const uint64_t ua = a;
+  const uint64_t ub = b;
+  switch (f3) {
+    case 0:  // MUL
+      return static_cast<uint32_t>(ua * ub);
+    case 1:  // MULH
+      return static_cast<uint32_t>(static_cast<uint64_t>(sa * sb) >> 32);
+    case 2:  // MULHSU
+      return static_cast<uint32_t>(static_cast<uint64_t>(sa * static_cast<int64_t>(ub)) >> 32);
+    case 3:  // MULHU
+      return static_cast<uint32_t>((ua * ub) >> 32);
+    case 4:  // DIV
+      if (b == 0) return 0xFFFFFFFFu;
+      if (a == 0x80000000u && b == 0xFFFFFFFFu) return 0x80000000u;
+      return static_cast<uint32_t>(static_cast<int32_t>(sa / sb));
+    case 5:  // DIVU
+      if (b == 0) return 0xFFFFFFFFu;
+      return a / b;
+    case 6:  // REM
+      if (b == 0) return a;
+      if (a == 0x80000000u && b == 0xFFFFFFFFu) return 0u;
+      return static_cast<uint32_t>(static_cast<int32_t>(sa % sb));
+    default:  // REMU
+      if (b == 0) return a;
+      return a % b;
+  }
+}
+
 uint32_t GoldenIss::CsrRead(uint32_t addr, bool* illegal) const {
   *illegal = false;
+  if (IsHpm(addr)) return 0u;   // event counters: not predictable
   switch (addr) {
     case 0x300: return (mstatus_mie_ << 3) | (mstatus_mpie_ << 7) | 0x1800u;
-    case 0x301: return 0x40000100u;   // misa: RV32I
+    case 0x301: return rv32m_ ? 0x40001100u : 0x40000100u;   // misa
     case 0x304: return mie_;
     case 0x305: return mtvec_;
     case 0x320: return 0u;            // mcountinhibit
@@ -111,9 +154,7 @@ uint32_t GoldenIss::CsrRead(uint32_t addr, bool* illegal) const {
     case 0x344: return 0u;            // mip: no interrupts in lockstep runs
     case 0xB00: return static_cast<uint32_t>(mcycle_);
     case 0xB02: return static_cast<uint32_t>(minstret_);
-    case 0xB03: case 0xB04: case 0xB05: case 0xB06:
     case 0xB80: case 0xB82:
-    case 0xB83: case 0xB84: case 0xB85: case 0xB86:
       return 0u;
     case 0xF11: case 0xF12: case 0xF13: case 0xF14: return 0u;
     default:
@@ -124,6 +165,7 @@ uint32_t GoldenIss::CsrRead(uint32_t addr, bool* illegal) const {
 
 void GoldenIss::CsrWrite(uint32_t addr, uint32_t value, bool* illegal) {
   *illegal = false;
+  if (IsHpm(addr)) return;
   switch (addr) {
     case 0x300:
       mstatus_mie_ = (value >> 3) & 1u;
@@ -138,9 +180,7 @@ void GoldenIss::CsrWrite(uint32_t addr, uint32_t value, bool* illegal) {
     case 0x343: mtval_ = value; break;
     case 0xB00: mcycle_ = (mcycle_ & 0xFFFFFFFF00000000ull) | value; break;
     case 0xB02: minstret_ = (minstret_ & 0xFFFFFFFF00000000ull) | value; break;
-    case 0xB03: case 0xB04: case 0xB05: case 0xB06:
     case 0xB80: case 0xB82:
-    case 0xB83: case 0xB84: case 0xB85: case 0xB86:
       break;
     // Read-only: 0x301 misa, 0x344 mip, 0xF1x identification.
     case 0x301: case 0x344:
@@ -328,6 +368,11 @@ IssStep GoldenIss::Step() {
     }
 
     case 0x33: {  // OP
+      if (rv32m_ && f7 == 0x01u) {   // M extension
+        rd_val = MulDiv(f3, a, b);
+        writes_rd = true;
+        break;
+      }
       if (f7 == 0x20u) {
         if (f3 != 0 && f3 != 5) { trap(kExcIllegal, insn); return s; }
       } else if (f7 != 0) {
@@ -384,12 +429,11 @@ IssStep GoldenIss::Step() {
       // microarchitectural or external state that this model does not track.
       switch (csr) {
         case 0xB00: case 0xB02: case 0xB80: case 0xB82:
-        case 0xB03: case 0xB04: case 0xB05: case 0xB06:
-        case 0xB83: case 0xB84: case 0xB85: case 0xB86:
         case 0x344:
           s.rd_unpredictable = true;
           break;
         default:
+          if (IsHpm(csr)) s.rd_unpredictable = true;
           break;
       }
       break;

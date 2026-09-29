@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build and run the rv32ui-p compliance suite from third_party/riscv-tests.
+# Build and run the riscv-tests compliance suites from third_party/riscv-tests:
+# rv32ui-p on both cores, and rv32um-p on the P-core, which implements M.
 #
 # The upstream suite links its tests at 0x8000_0000 for a Spike-like machine.
 # This core's memory map puts ROM at 0x0000_0000 (spec section 3), so the tests
@@ -10,12 +11,14 @@ set -uo pipefail
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BUILD=${BUILD:-$ROOT/build}
 THIRD=${THIRD:-$ROOT/third_party}
-SIM="$BUILD/e_core_sim"
-OUT="$BUILD/riscv-tests"
-mkdir -p "$OUT"
 
 # shellcheck source=scripts/toolchain.sh
 . "$ROOT/scripts/toolchain.sh"
+# shellcheck source=scripts/core_config.sh
+. "$ROOT/scripts/core_config.sh"
+SIM="$CORE_SIM"
+OUT="$CORE_OUT/riscv-tests"
+mkdir -p "$OUT"
 
 ISA_DIR="$THIRD/riscv-tests/isa"
 ENV_DIR="$THIRD/riscv-tests/env/p"
@@ -35,19 +38,26 @@ command -v "$RVCC" >/dev/null 2>&1 || { echo "==> riscv-tests: no RISC-V compile
 # 32-bit form and includes ../rv64ui/<name>.S, which is exactly how upstream
 # builds rv32ui-p-*. Using the wrappers rather than the rv64 sources directly
 # is what keeps the rv64-only tests (addiw, ld, sd, sllw, ...) out.
-SRC_DIR="$ISA_DIR/rv32ui"
+# The authoritative lists, taken verbatim from isa/rv32ui/Makefrag and
+# isa/rv32um/Makefrag. Entries are <suite>/<name>.
+UI_LIST="simple add addi and andi auipc beq bge bgeu blt bltu bne fence_i \
+         jal jalr lb lbu lh lhu lw ld_st lui ma_data or ori sb sh sw st_ld \
+         sll slli slt slti sltiu sltu sra srai srl srli sub xor xori"
+UM_LIST="div divu mul mulh mulhsu mulhu rem remu"
 
-# The authoritative rv32ui list, taken verbatim from isa/rv32ui/Makefrag.
-TEST_LIST="simple add addi and andi auipc beq bge bgeu blt bltu bne fence_i \
-           jal jalr lb lbu lh lhu lw ld_st lui ma_data or ori sb sh sw st_ld \
-           sll slli slt slti sltiu sltu sra srai srl srli sub xor xori"
+TEST_LIST=""
+for t in $UI_LIST; do TEST_LIST="$TEST_LIST rv32ui/$t"; done
+if [ "$CORE" = p_core ]; then
+  for t in $UM_LIST; do TEST_LIST="$TEST_LIST rv32um/$t"; done
+fi
 
-# Documented exclusions. Both are deliberate consequences of this core's
-# specification, not defects; see docs/e_core_verification_plan.md.
+# Documented exclusions. Both are deliberate consequences of the cores'
+# specification, not defects; see docs/e_core_verification_plan.md and
+# docs/p_core_verification_plan.md.
 #
-#   fence_i  requires an instruction cache to be meaningful. This core has no
-#            caches, so FENCE.I is an architectural NOP and the test cannot
-#            distinguish a correct implementation from a broken one.
+#   fence_i  (E-core only) the E-core implements FENCE.I as an architectural
+#            NOP. The P-core flushes and refetches after FENCE.I, which is
+#            what the test checks, so it runs there.
 #   ma_data  exercises MISALIGNED loads and stores and expects the hardware to
 #            complete them. This core traps misaligned accesses by design
 #            (specification section 2.4: "Misaligned accesses raise exceptions;
@@ -55,17 +65,23 @@ TEST_LIST="simple add addi and andi auipc beq bge bgeu blt bltu bne fence_i \
 #            installs no handler to emulate them, so it cannot pass. The
 #            behaviour it would test is covered instead by tb/asm/mem_align.S
 #            and by the misaligned cases in tb/asm/trap_exceptions.S.
-SKIP_LIST=${RISCV_TESTS_SKIP:-"fence_i ma_data"}
+if [ "$CORE" = p_core ]; then
+  SKIP_LIST=${RISCV_TESTS_SKIP:-"ma_data"}
+else
+  SKIP_LIST=${RISCV_TESTS_SKIP:-"fence_i ma_data"}
+fi
 
-CFLAGS="-march=rv32i_zicsr -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding \
-        -fno-builtin -static -Wa,-march=rv32i_zicsr \
+CFLAGS="-march=$RVARCH -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding \
+        -fno-builtin -static -Wa,-march=$RVARCH \
         -I$ENV_DIR -I$ISA_DIR/macros/scalar"
 
 pass=0; fail=0; skip=0
 declare -a rows
-printf "==> riscv-tests rv32ui-p\n"
-for name in $TEST_LIST; do
-  src="$SRC_DIR/$name.S"
+printf "==> riscv-tests (%s): %s\n" "$CORE" "$([ "$CORE" = p_core ] && echo "rv32ui-p + rv32um-p" || echo "rv32ui-p")"
+for entry in $TEST_LIST; do
+  suite=${entry%%/*}
+  name=${entry#*/}
+  src="$ISA_DIR/$suite/$name.S"
   if [ ! -f "$src" ]; then
     rows+=("$(printf '%-14s %-8s %s' "$name" "MISSING" "$src")")
     fail=$((fail+1)); continue
@@ -74,26 +90,30 @@ for name in $TEST_LIST; do
     rows+=("$(printf '%-14s %-8s %s' "$name" "SKIP" "documented exclusion")")
     skip=$((skip+1)); continue
   fi
-  elf="$OUT/rv32ui-p-$name.elf"
-  if ! $RVCC $CFLAGS -T "$LDS" -o "$elf" "$src" > "$OUT/$name.build.log" 2>&1; then
-    rows+=("$(printf '%-14s %-8s %s' "$name" "BUILD" "see $OUT/$name.build.log")")
+  elf="$OUT/$suite-p-$name.elf"
+  if ! $RVCC $CFLAGS -T "$LDS" -o "$elf" "$src" > "$OUT/$suite-$name.build.log" 2>&1; then
+    rows+=("$(printf '%-14s %-8s %s' "$name" "BUILD" "see $OUT/$suite-$name.build.log")")
     fail=$((fail+1)); continue
   fi
-  log="$OUT/$name.log"
-  if "$SIM" --elf "$elf" --waits=0 --max-cycles=2000000 > "$log" 2>&1; then
+  log="$OUT/$suite-$name.log"
+  # Pass criterion: zero wait states, and then randomised latency on both
+  # ports, which reorders every fetch/data interaction the test contains.
+  if "$SIM" --elf "$elf" --waits=0 --max-cycles=2000000 > "$log" 2>&1 &&
+     "$SIM" --elf "$elf" --waits=random:$((pass + fail + 1)) --max-cycles=4000000 \
+         > "$log.rand" 2>&1; then
     cyc=$(grep -oP 'cycles=\K[0-9]+' "$log" | tail -1)
     ins=$(grep -oP 'instret=\K[0-9]+' "$log" | tail -1)
     rows+=("$(printf '%-14s %-8s cycles=%-7s instret=%s' "$name" "PASS" "${cyc:-?}" "${ins:-?}")")
     pass=$((pass+1))
   else
-    tn=$(grep -oP 'tohost=\K[0-9]+' "$log" | tail -1)
+    tn=$(cat "$log" "$log.rand" 2>/dev/null | grep -oP 'tohost=\K[0-9]+' | tail -1)
     rows+=("$(printf '%-14s %-8s failing test #%s (%s)' "$name" "FAIL" "${tn:-?}" "$log")")
     fail=$((fail+1))
   fi
 done
 
 for r in "${rows[@]}"; do echo "  $r"; done
-echo "    rv32ui-p: $pass passed, $fail failed, $skip skipped"
+echo "    riscv-tests: $pass passed, $fail failed, $skip skipped"
 
 # Machine-readable table for docs/e_core_results.md.
 { echo "| Test | Status | Notes |"; echo "|---|---|---|"

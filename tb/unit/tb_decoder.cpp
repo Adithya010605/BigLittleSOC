@@ -17,9 +17,22 @@
 //   * the safety property that an illegal instruction asserts NO enable of any
 //     kind -- no register write, no memory request, no control transfer, no
 //     CSR access, no privileged action
+//
+// Built plain, this checks the E-core elaboration (RV32M = 0), in which every
+// M-extension encoding must trap. tb_decoder_rv32m.cpp defines TB_RV32M and
+// includes this file to check the P-core elaboration, in which all eight M
+// encodings decode to md_en with md_op = funct3. The reference model switches
+// on the same macro, so one model covers both.
 // ============================================================================
 #include "Vdecoder.h"
 #include "tb_common.h"
+
+#ifndef TB_RV32M
+#define TB_RV32M 0
+#endif
+#ifndef TB_NAME
+#define TB_NAME "decoder"
+#endif
 
 #include <cinttypes>
 #include <cstring>
@@ -56,6 +69,9 @@ struct Ctrl {
   bool csr_en = false, csr_use_imm = false, csr_read = false, csr_write = false;
   uint8_t csr_op = CSR_OP_RW;
   bool ecall = false, ebreak = false, mret = false, wfi = false, fence = false;
+  bool fence_i = false;
+  bool md_en = false;
+  uint8_t md_op = 0;
   bool illegal = false;
 };
 
@@ -157,6 +173,13 @@ static Ctrl RefDecode(uint32_t insn) {
     }
 
     case 0x33: {  // OP
+      if (TB_RV32M && funct7 == 0x01u) {      // M extension: all 8 funct3
+        c.rs1_used = true; c.rs2_used = true; c.op_a_sel = OP_A_RS1;
+        c.op_b_sel = OP_B_RS2; c.rf_we = true; c.wb_sel = WB_ALU;
+        c.alu_op = alu_from(false);
+        c.md_en = true; c.md_op = static_cast<uint8_t>(funct3);
+        return c;
+      }
       if (funct7 == 0x20u) {
         if (funct3 != 0 && funct3 != 5) return illegal();
       } else if (funct7 != 0x00u) {
@@ -171,6 +194,7 @@ static Ctrl RefDecode(uint32_t insn) {
     case 0x0F:  // MISC-MEM
       if (funct3 != 0 && funct3 != 1) return illegal();
       c.fence = true;
+      c.fence_i = (funct3 == 1);
       return c;
 
     case 0x73:  // SYSTEM
@@ -247,6 +271,9 @@ static void CheckInsn(uint32_t insn, const char* tag) {
   eq("mret", g_dut->mret_o, r.mret ? 1u : 0u);
   eq("wfi", g_dut->wfi_o, r.wfi ? 1u : 0u);
   eq("fence", g_dut->fence_o, r.fence ? 1u : 0u);
+  eq("fence_i", g_dut->fence_i_o, r.fence_i ? 1u : 0u);
+  eq("md_en", g_dut->md_en_o, r.md_en ? 1u : 0u);
+  if (r.md_en) eq("md_op", g_dut->md_op_o, r.md_op);
 
   // The datapath selects only carry meaning for a legal instruction; an
   // illegal one traps before they are used.
@@ -358,11 +385,20 @@ int main(int argc, char** argv) {
   }
   tb::Group("Zicsr read/write side-effect rules over rs1 and rd = x0");
 
-  // ---------------- illegal: the M extension ----------------
+  // ---------------- the M extension ----------------
   for (uint32_t f3 = 0; f3 < 8; ++f3) {
-    CheckInsn(R(0x01, 3, 2, f3, 1, 0x33), "M-ext");
+    for (uint32_t rd : {0u, 1u, 31u}) {
+      CheckInsn(R(0x01, 3, 2, f3, rd, 0x33), "M-ext");
+    }
   }
-  tb::Group("MUL/MULH/DIV/REM raise illegal-instruction");
+  // funct7 values adjacent to 0000001 are still reserved in both elaborations.
+  for (uint32_t f7 : {0x03u, 0x05u, 0x21u, 0x41u}) {
+    CheckInsn(R(f7, 3, 2, 0, 1, 0x33), "M-ext-like bad f7");
+  }
+  // OP-IMM has no M-extension form: funct7 = 0000001 on a shift still traps.
+  CheckInsn(R(0x01, 3, 2, 1, 1, 0x13), "SLLI f7=1");
+  tb::Group(TB_RV32M ? "all eight M-extension encodings decode (RV32M = 1)"
+                     : "MUL/MULH/DIV/REM raise illegal-instruction (RV32M = 0)");
 
   // ---------------- illegal: reserved funct3 in valid opcodes ----------------
   CheckInsn(R(0x00, 3, 2, 2, 8, 0x63), "BRANCH f3=2");
@@ -412,6 +448,9 @@ int main(int argc, char** argv) {
     // Bias half the vectors towards well-formed 32-bit encodings so the sweep
     // spends real effort on the legal space, not only on the trap path.
     if (i & 1) insn |= 3u;
+    // ...and one vector in eight towards the OP / M-extension space, which a
+    // uniform sweep would otherwise visit only once per 2^14 words.
+    if ((i & 7) == 5) insn = (insn & 0x01FFFF80u) | 0x02000033u;
     CheckInsn(insn, "rand");
     if (!RefDecode(insn).illegal) ++legal_seen;
   }
@@ -421,5 +460,5 @@ int main(int argc, char** argv) {
             "random sweep produced too few legal instructions to be meaningful");
   tb::Group("2000000 random instruction words");
 
-  return tb::Report("decoder");
+  return tb::Report(TB_NAME);
 }

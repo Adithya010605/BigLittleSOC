@@ -64,6 +64,9 @@ struct WaitConfig {
   // Returns false and fills `error` if the string is malformed.
   static bool Parse(const std::string& spec, WaitConfig* out, std::string* error);
   std::string Describe() const;
+  // Appended to Describe(); the harness uses it to report a data-port
+  // override (--dwaits).
+  std::string label_suffix;
 };
 
 // ---------------------------------------------------------------------------
@@ -112,6 +115,12 @@ class MemoryModel {
   bool LoadElf(const ElfImage& elf, std::string* error);
 
   void SetWaits(const WaitConfig& cfg);
+  // Overrides the data port alone, after SetWaits. "Fast fetch, slow data" --
+  // an instruction-cache hit beside a data-cache miss -- is the one latency
+  // mix that lets fetch run far enough ahead to pack instructions tightly
+  // behind a memory access that stalls, and equal latencies on both ports
+  // never produce it.
+  void SetDataWaits(const WaitConfig& cfg);
 
   // Per-cycle interface. Call order within one simulated cycle:
   //   1. settle the core's outputs
@@ -162,6 +171,7 @@ class MemoryModel {
     uint32_t held_rdata = 0;
     bool held_err = false;
     uint64_t rng = 1;
+    WaitConfig cfg;
   };
 
   // The read half of an access, with no side effects at all, so that the

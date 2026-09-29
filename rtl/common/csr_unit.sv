@@ -11,6 +11,11 @@
 //     read-only CSR; the decoder computes that distinction and passes it in
 //     as csr_write_i.
 //
+// Both cores share this unit. They differ only in its parameters: MISA
+// advertises the instruction set, and NUM_HPM sets how many event counters
+// (mhpmcounter3 upwards) exist. Each counter increments on its own bit of
+// hpm_event_i; what those events mean is defined by the core that drives them.
+//
 // There is no csr_read enable: none of the registers here has a read side
 // effect, so whether an instruction architecturally "reads" the CSR changes
 // nothing. Only the write side is qualified.
@@ -19,7 +24,9 @@
 module csr_unit
   import e_core_pkg::*;
 #(
-  parameter logic [31:0] HART_ID = 32'h0000_0000
+  parameter logic [31:0] HART_ID = 32'h0000_0000,
+  parameter logic [31:0] MISA    = MISA_VALUE,
+  parameter int unsigned NUM_HPM = NUM_PERF     // 1 .. 29
 ) (
   input  logic                  clk_i,
   input  logic                  rst_ni,
@@ -56,10 +63,8 @@ module csr_unit
 
   // ---- counter events ----
   input  logic                  instr_retired_i,
-  input  logic                  stall_i,
-  input  logic                  branch_i,
-  input  logic                  branch_taken_i,
-  input  logic                  mem_access_i
+  // One event per mhpmcounter: bit i increments mhpmcounter(3+i).
+  input  logic [NUM_HPM-1:0]    hpm_event_i
 );
 
   // --------------------------------------------------------------------
@@ -78,8 +83,8 @@ module csr_unit
 
   logic [63:0] mcycle_q,   mcycle_d;
   logic [63:0] minstret_q, minstret_d;
-  logic [63:0] mhpm_q [NUM_PERF];
-  logic [63:0] mhpm_d [NUM_PERF];
+  logic [63:0] mhpm_q [NUM_HPM];
+  logic [63:0] mhpm_d [NUM_HPM];
 
   // mip is a read-only view of the interrupt pins.
   logic [31:0] mip;
@@ -105,6 +110,22 @@ module csr_unit
   assign mie_o         = mie_q;
 
   // --------------------------------------------------------------------
+  // Event-counter address decode: offset from mhpmcounter3 / mhpmcounter3h.
+  // --------------------------------------------------------------------
+  localparam int unsigned HPM_IDX_W = (NUM_HPM > 1) ? $clog2(NUM_HPM) : 1;
+
+  logic [11:0]          hpm_lo_off, hpm_hi_off;
+  logic                 hpm_lo_hit, hpm_hi_hit;
+  logic [HPM_IDX_W-1:0] hpm_idx;
+
+  assign hpm_lo_off = csr_addr_i - CSR_MHPMCOUNTER3;
+  assign hpm_hi_off = csr_addr_i - CSR_MHPMCOUNTER3H;
+  assign hpm_lo_hit = (hpm_lo_off < 12'(NUM_HPM));
+  assign hpm_hi_hit = (hpm_hi_off < 12'(NUM_HPM));
+  assign hpm_idx    = hpm_hi_hit ? hpm_hi_off[HPM_IDX_W-1:0]
+                                 : hpm_lo_off[HPM_IDX_W-1:0];
+
+  // --------------------------------------------------------------------
   // Read
   // --------------------------------------------------------------------
   logic exists;      // the address names an implemented CSR
@@ -117,7 +138,7 @@ module csr_unit
 
     unique case (csr_addr_i)
       CSR_MSTATUS:       csr_rdata_o = mstatus;
-      CSR_MISA:          begin csr_rdata_o = MISA_VALUE;  read_only = 1'b1; end
+      CSR_MISA:          begin csr_rdata_o = MISA;        read_only = 1'b1; end
       CSR_MIE:           csr_rdata_o = mie_q;
       CSR_MTVEC:         csr_rdata_o = mtvec_q;
       CSR_MCOUNTINHIBIT: csr_rdata_o = {29'd0, inhibit_ir_q, 1'b0, inhibit_cy_q};
@@ -132,15 +153,6 @@ module csr_unit
       CSR_MINSTRET:      csr_rdata_o = minstret_q[31:0];
       CSR_MINSTRETH:     csr_rdata_o = minstret_q[63:32];
 
-      CSR_MHPMCOUNTER3:  csr_rdata_o = mhpm_q[PERF_STALL][31:0];
-      CSR_MHPMCOUNTER4:  csr_rdata_o = mhpm_q[PERF_BRANCH][31:0];
-      CSR_MHPMCOUNTER5:  csr_rdata_o = mhpm_q[PERF_BR_TAKEN][31:0];
-      CSR_MHPMCOUNTER6:  csr_rdata_o = mhpm_q[PERF_MEM][31:0];
-      CSR_MHPMCOUNTER3H: csr_rdata_o = mhpm_q[PERF_STALL][63:32];
-      CSR_MHPMCOUNTER4H: csr_rdata_o = mhpm_q[PERF_BRANCH][63:32];
-      CSR_MHPMCOUNTER5H: csr_rdata_o = mhpm_q[PERF_BR_TAKEN][63:32];
-      CSR_MHPMCOUNTER6H: csr_rdata_o = mhpm_q[PERF_MEM][63:32];
-
       CSR_MVENDORID,
       CSR_MARCHID,
       CSR_MIMPID:        begin csr_rdata_o = 32'd0;   read_only = 1'b1; end
@@ -148,6 +160,16 @@ module csr_unit
 
       default:           exists = 1'b0;
     endcase
+
+    // The event counters form a contiguous block, so they are decoded by
+    // offset from the block base rather than one case arm each.
+    if (hpm_lo_hit) begin
+      csr_rdata_o = mhpm_q[hpm_idx][31:0];
+      exists      = 1'b1;
+    end else if (hpm_hi_hit) begin
+      csr_rdata_o = mhpm_q[hpm_idx][63:32];
+      exists      = 1'b1;
+    end
   end
 
   // A CSR instruction is illegal if the register does not exist, or if it
@@ -234,12 +256,13 @@ module csr_unit
   //
   // mcycle counts every cycle unless inhibited. minstret counts only retired
   // instructions -- never a flushed instruction and never a stall bubble.
-  // The four custom counters feed the P-core comparison in Phase 2; their
-  // semantics are fixed here and documented in docs/e_core_results.md:
-  //   3  cycles in which S2 held an instruction back
+  // The event counters count whatever the core drives on hpm_event_i. Both
+  // cores define the first four identically (docs/e_core_results.md):
+  //   3  cycles in which the decode stage held an instruction back
   //   4  branch instructions retired (conditional branches only, not jumps)
   //   5  branch instructions retired with the condition true
   //   6  loads and stores retired
+  // The P-core adds three more; see docs/p_core_microarchitecture.md.
   // --------------------------------------------------------------------
   logic cyc_wr, cych_wr, ins_wr, insh_wr;
   assign cyc_wr  = wr_en & (csr_addr_i == CSR_MCYCLE);
@@ -258,29 +281,12 @@ module csr_unit
     if (insh_wr) minstret_d[63:32] = wdata;
   end
 
-  logic [NUM_PERF-1:0] perf_event;
-  assign perf_event[PERF_STALL]    = stall_i;
-  assign perf_event[PERF_BRANCH]   = branch_i;
-  assign perf_event[PERF_BR_TAKEN] = branch_taken_i;
-  assign perf_event[PERF_MEM]      = mem_access_i;
-
   always_comb begin
-    for (int unsigned i = 0; i < NUM_PERF; i++) begin
-      mhpm_d[i] = mhpm_q[i] + (perf_event[i] ? 64'd1 : 64'd0);
+    for (int unsigned i = 0; i < NUM_HPM; i++) begin
+      mhpm_d[i] = mhpm_q[i] + (hpm_event_i[i] ? 64'd1 : 64'd0);
     end
-    if (wr_en) begin
-      unique case (csr_addr_i)
-        CSR_MHPMCOUNTER3:  mhpm_d[PERF_STALL][31:0]     = wdata;
-        CSR_MHPMCOUNTER4:  mhpm_d[PERF_BRANCH][31:0]    = wdata;
-        CSR_MHPMCOUNTER5:  mhpm_d[PERF_BR_TAKEN][31:0]  = wdata;
-        CSR_MHPMCOUNTER6:  mhpm_d[PERF_MEM][31:0]       = wdata;
-        CSR_MHPMCOUNTER3H: mhpm_d[PERF_STALL][63:32]    = wdata;
-        CSR_MHPMCOUNTER4H: mhpm_d[PERF_BRANCH][63:32]   = wdata;
-        CSR_MHPMCOUNTER5H: mhpm_d[PERF_BR_TAKEN][63:32] = wdata;
-        CSR_MHPMCOUNTER6H: mhpm_d[PERF_MEM][63:32]      = wdata;
-        default: ;
-      endcase
-    end
+    if (wr_en && hpm_lo_hit) mhpm_d[hpm_idx][31:0]  = wdata;
+    if (wr_en && hpm_hi_hit) mhpm_d[hpm_idx][63:32] = wdata;
   end
 
   // --------------------------------------------------------------------
@@ -298,7 +304,7 @@ module csr_unit
       inhibit_ir_q   <= 1'b0;
       mcycle_q       <= 64'd0;
       minstret_q     <= 64'd0;
-      for (int unsigned i = 0; i < NUM_PERF; i++) begin
+      for (int unsigned i = 0; i < NUM_HPM; i++) begin
         mhpm_q[i] <= 64'd0;
       end
     end else begin
@@ -314,7 +320,7 @@ module csr_unit
       inhibit_ir_q   <= inhibit_ir_d;
       mcycle_q       <= mcycle_d;
       minstret_q     <= minstret_d;
-      for (int unsigned i = 0; i < NUM_PERF; i++) begin
+      for (int unsigned i = 0; i < NUM_HPM; i++) begin
         mhpm_q[i] <= mhpm_d[i];
       end
     end

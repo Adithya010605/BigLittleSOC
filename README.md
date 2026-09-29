@@ -1,11 +1,37 @@
-# RISC-V SoC — E-Core
+# RISC-V SoC — E-Core and P-Core
 
-A 3-stage pipelined **RV32I_Zicsr** machine-mode RISC-V core, written in
-SystemVerilog-2012 and verified with Verilator. This is Phase 0 + Phase 1 of the
-larger big.LITTLE / UMA SoC described in `RISC-V_SoC_Project_Plan.md`; the P-core,
-caches, interconnect and accelerator are **not** part of this tree yet.
+The two CPU cores of the big.LITTLE / UMA SoC described in
+`RISC-V_SoC_Project_Plan.md`, written in SystemVerilog-2012 and verified with
+Verilator: Phases 0–2. Caches, interconnect and accelerator are **not** part of
+this tree yet.
 
-## What it is
+* **E-core** — 3-stage, RV32I_Zicsr, static not-taken, small.
+* **P-core** — 5-stage, RV32IM_Zicsr_Zifencei, BHT + BTB branch prediction,
+  Booth multiplier and restoring divider.
+
+Both have identical external interfaces (two valid/ready memory ports, three
+interrupt pins, RVFI), share the ALU, register file, immediate generator, LSU,
+decoder, CSR file and trap unit, and run under the same testbench and golden
+ISS. `CORE=e_core` (default) or `CORE=p_core` selects the core for any
+per-core target.
+
+## P-core at a glance
+
+| Property | Value |
+|---|---|
+| ISA | RV32I + M + Zicsr + Zifencei, machine mode only |
+| Pipeline | 5 stages: `IF` → `ID` → `EX` → `MEM` → `WB` |
+| Branch prediction | 256-entry 2-bit BHT + 64-entry BTB; resolved in EX; 0-cycle correctly-predicted taken branch, 2-cycle mispredict |
+| Forwarding | EX→EX, MEM→EX, MEM→MEM (store data); 1-cycle load-use interlock, none for load→store data |
+| Multiply / divide | radix-4 Booth 4 cycles / restoring 33 cycles, abandoned on interrupt |
+| Traps | precise, at MEM; FENCE.I flushes and refetches |
+| Counters | the E-core's four plus mispredicts, MUL/DIV busy cycles, interlock cycles |
+
+Full details: [`docs/p_core_microarchitecture.md`](docs/p_core_microarchitecture.md),
+[`docs/p_core_verification_plan.md`](docs/p_core_verification_plan.md),
+[`docs/p_core_results.md`](docs/p_core_results.md).
+
+## E-core at a glance
 
 | Property | Value |
 |---|---|
@@ -20,6 +46,17 @@ caches, interconnect and accelerator are **not** part of this tree yet.
 Full details: [`docs/e_core_microarchitecture.md`](docs/e_core_microarchitecture.md).
 
 ## Status
+
+### P-core
+
+See `docs/p_core_verification_plan.md` and `docs/p_core_results.md` for the
+full figures. In summary: lint clean in both RVFI elaborations; 5 new unit
+benches (≈54M checks); 20 directed tests at 5 latency configurations;
+`rv32ui-p` + `rv32um-p` + `fence_i` at zero and random latency; 600 randomised
+RV32IM lockstep programs; mutation testing with no unexplained survivors;
+100% line coverage; Dhrystone runs with its results verified.
+
+### E-core
 
 | Gate | Result |
 |---|---|
@@ -82,15 +119,18 @@ make tools                  # confirm the toolchain
 make test                   # the full acceptance gate
 ```
 
-`make test` runs, in order: lint → unit tests → directed assembly tests →
-rv32ui-p compliance suite → C programs → randomised lockstep → mutation
-testing → coverage. It is the gate; it must be green with zero warnings.
+`make test` runs lint and the unit tests, then each core's gate (directed
+assembly → compliance → C programs → randomised lockstep → mutation testing →
+coverage), E-core then P-core, then the Dhrystone benchmarks. It is the gate;
+it must be green with zero warnings. `make e-test` / `make p-test` run one
+core's gate.
 
 The randomised and mutation stages dominate the runtime. For a quicker pass:
 
 ```sh
 make lint unit asm-tests riscv-tests sw-tests
 RANDOM_NPROG=20 RANDOM_NSEED=1 make random
+make CORE=p_core asm-tests riscv-tests sw-tests
 ```
 
 ## Individual targets
@@ -100,14 +140,16 @@ RANDOM_NPROG=20 RANDOM_NSEED=1 make random
 | `make tools` | report toolchain state |
 | `make lint` | `verilator --lint-only -Wall` over all of `rtl/` |
 | `make unit` | build + run every unit testbench in `tb/unit/` |
-| `make e_core` | build the Verilator integration simulator |
+| `make e_core` / `make p_core` | build that core's Verilator simulator |
 | `make asm-tests` | run the directed assembly tests in `tb/asm/` |
 | `make sw-tests` | compile and run the C programs in `sw/tests/` |
 | `make riscv-tests` | run the rv32ui-p compliance suite |
 | `make random` | randomised lockstep against the golden ISS |
 | `make mutation` | verify the tests can actually detect broken RTL |
 | `make coverage` | coverage build + line/toggle report |
-| `make synth` | Yosys area estimate |
+| `make bench` | Dhrystone on both cores + E/P comparison table |
+| `make synth` | Yosys area estimate, both cores |
+| `make e-test` / `make p-test` | one core's full gate |
 | `make wave TEST=<name>` | rerun one test with tracing → `build/<name>.vcd` |
 | `make clean` | remove build products |
 
@@ -115,12 +157,14 @@ RANDOM_NPROG=20 RANDOM_NSEED=1 make random
 
 ```
 rtl/common/     ALU, regfile, immediate generator, decoder, CSR unit, LSU, shared package
-rtl/e_core/     pipeline stages, hazard unit, trap unit, top level
-tb/unit/        one C++ Verilator harness per common/ module
+rtl/e_core/     E-core pipeline stages, hazard unit, trap unit, top level
+rtl/p_core/     P-core pipeline stages, predictor, multiplier, divider, hazard unit, top
+tb/unit/        one C++ Verilator harness per common/ module (p_core/: per P-core module)
 tb/integration/ core harness, memory model, ELF loader, golden ISS
-tb/asm/         hand-written self-checking assembly tests
+tb/asm/         hand-written self-checking assembly tests (p_core/: P-core only)
 sw/common/      startup code, linker scripts, UART driver
 sw/tests/       C benchmark programs
+sw/bench/       Dhrystone driver (upstream sources compiled unmodified)
 scripts/        build and regression drivers
 syn/            Yosys synthesis script
 docs/           microarchitecture, verification plan, results, lab notebook

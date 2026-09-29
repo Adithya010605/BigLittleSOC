@@ -712,3 +712,174 @@ From the core's own counters over a 24-element bubble sort: CPI 1.39, with
 Those two account for essentially all of the gap from the ideal 1.0. This is
 the expected profile for a static-not-taken machine on a branch-heavy workload,
 and it is the specific number the P-core's branch predictor has to beat.
+
+---
+
+## 2026-09-26 — Phase 2: the P-core
+
+Goal from the plan (weeks 5–7): a 5-stage RV32IM core with full forwarding, a
+load-use interlock detected in ID, branches resolved in EX, a 256-entry 2-bit
+BHT and a 64-entry BTB, a 4-cycle Booth multiplier and a restoring divider,
+performance counters, Dhrystone, and a comparison with the E-core. Exit
+criterion: rv32ui + rv32um pass and Dhrystone runs with measurable IPC.
+
+### Decision: reuse, and change shared modules only through parameters
+
+The P-core reuses `alu`, `regfile`, `imm_gen`, `lsu`, `decoder`, `csr_unit` and
+the E-core's `e_core_trap` unchanged in behaviour. Two shared modules gained
+parameters whose defaults leave the E-core exactly as it was:
+
+* `decoder` — `RV32M` (M extension legal or illegal) and a `fence_i_o` output;
+* `csr_unit` — `MISA` and `NUM_HPM`; the four named event inputs became one
+  vector, decoded by offset from `mhpmcounter3`.
+
+Second elaborations of both (`tb_decoder_rv32m.cpp`, `tb_csr_unit_p.cpp`) run
+the original harnesses under the P-core parameters, selected by new
+`UNIT-TOP` / `UNIT-VFLAGS` directive lines that `run_unit.sh` reads.
+
+The testbench became core-generic too: `tb_e_core.cpp` is now `tb_core.cpp`,
+with `-DCORE_P` selecting the P-core and the matching golden-ISS
+configuration, and every regression script takes `CORE=e_core|p_core` from
+`scripts/core_config.sh`. The E-core keeps all of its old build paths.
+
+### Decision: MEM is the commit point, and the interlock lives in ID
+
+Committing at MEM — where the data access happens — gives precise traps with
+no separate commit stage and lets the E-core's trap unit be reused as is.
+Deciding the load-use stall in ID means EX never holds an instruction whose
+operand does not exist yet; EX only ever stalls for its own multi-cycle units
+or for MEM.
+
+### Decision: operand refresh instead of more forwarding
+
+An instruction held in EX (on the divider, or behind a MEM stage waiting on
+memory) loses a forwarded operand when its producer leaves WB. Writing the
+forwarded operands back into ID/EX whenever it is not being reloaded fixes
+that for the cost of one mux.
+
+### Test gap found by mutation: the refresh was reachable only by luck
+
+The first mutation run killed `no_operand_refresh` with exactly one test — a
+randomised lockstep program at 2 wait states — although `muldiv_hazard`
+check 14 had been written for that case. It never reached it: with both memory
+ports equally slow, fetch cannot run far enough ahead to pack producer, stalled
+store and consumer back to back, so the consumer always read the register file
+after the producer had written it. The situation that does it is fast fetch
+beside slow data, an I-cache hit next to a D-cache miss, which the memory
+model could not express. It now can: `--dwaits=` overrides the data port's
+latency alone, and every directed test (both cores) and every mutation run
+adds a fifth configuration, `0/d3`. Check 14 also gained a leading store to
+stall MEM. `no_operand_refresh` is now killed by 8 tests, directed ones among
+them.
+
+### Decision: the store data is exempt from the interlock
+
+`lw x5; sw x5` needs no stall: the store takes its data from WB when it reaches
+MEM (MEM→MEM forwarding), with the same refresh trick keeping `data_wdata_o`
+stable until grant. A performance-only feature, so `p_perf` checks that the
+interlock counter stays at exactly zero for that pair; the mutation that
+removes the exemption is killed by it.
+
+### Decision: every instruction's next pc is checked, not just branches
+
+EX compares the actual next pc with the predicted one for every instruction.
+That makes BTB aliasing, stale entries after self-modifying code and
+uninitialised tables harmless, which is what lets the predictor tables be
+un-reset RAM. A stale entry is invalidated when it hits a non-control
+instruction, which `fence_i` check 8 measures.
+
+### Decision: FENCE.I flushes and refetches
+
+The P-core fetches up to three instructions ahead of a store in MEM, so a
+FENCE.I that did nothing would execute stale code. It refetches `pc + 4` when
+it retires. The rv32ui `fence_i` test — skipped on the E-core — passes, and
+`tb/asm/p_core/fence_i.S` patches the instruction immediately after the
+FENCE.I, which is certainly in flight. The toolchain needed `_zifencei` in
+`-march` for the assembler to accept the instruction.
+
+### Bug in my own test: an interlock that slow fetch makes unnecessary
+
+`p_perf` check 7 asserted that `lw x10; addi x12, x10, 1` interlocks at least
+once. It passed at 0 and 2 wait states and failed at `random:1`: with slow
+instruction fetch, the addi reached ID only after the load had finished, and
+no interlock was needed at all. The hardware was right; the test's assumption
+was not. A divide now precedes the pair, holding both in the fetch buffers
+for 33 cycles so they always move together.
+
+### Bug in my own test: a mispredict count I got wrong by hand
+
+The stale-BTB-entry check in `fence_i.S` first expected 4 mispredicts. Traced
+by hand against the predictor rules, the loop has five: the cold JAL into the
+patched site, the stale entry itself, the cold JAL back, the loop branch's
+cold first iteration, and its exit. The RTL said 5 on the first run; the
+constant was corrected, and the comment now itemises all five.
+
+### Mutation finding: one "survivor" was an equivalent mutant
+
+`csr_not_late` removed CSRs from the MEM stage's "value is made here" flag and
+survived. Tracing why: the interlock's "late" test for the instruction in EX is
+a separate expression that still includes CSRs, so no consumer ever reaches EX
+while a CSR is in MEM, and the one consumer allowed through — a store's data
+operand — is repaired in MEM from WB. So the MEM copy is redundant for CSRs.
+The table now records `csr_not_late_in_mem` as equivalent, with the
+reasoning, and adds `csr_not_late_in_ex`, which removes CSRs from the copy the
+interlock actually uses. That one is killed by 26 tests.
+
+Final P-core table: 30 killed, 2 documented equivalents (both are this same
+redundancy, for loads and for CSRs), 0 unexplained survivors.
+
+### Performance-only features are verified through the counters
+
+Six P-core mutations — never predict taken, mispredict everything, BHT never
+trained, BTB ignores its tag, stale entries never invalidated, multiplier
+result not held — leave every computed value correct. With only architectural
+checks they would all have survived. The exact `mhpmcounter7/8/9` checks in
+`branch_predict`, `fence_i` and `p_perf` kill all six. The tag check needed a
+dedicated case (`branch_predict` check 13): a non-branch sharing a BTB index
+with a trained branch, because two aliasing *branches* mispredict the same
+number of times with or without the tag.
+
+### Bug found by coverage: dead code in the shared decoder
+
+After the decoder change, the E-core's line coverage dropped to 99.29%:
+`decoder.sv` had a branch taken only when `RV32M = 1`, which is structurally
+dead in the E-core's elaboration. Each core's gate requires 100% line
+coverage, so rather than waive it, `md_en_o` became a plain assignment and
+the M encoding is simply excluded from the illegal test. There is now no line
+that is dead in either elaboration.
+
+### Synthesis: a part-select sv2v lowers into illegal Verilog
+
+`op_i != MD_MULHU[1:0]` is legal SystemVerilog; sv2v inlines the enum constant
+and produces `3'b011[1:0]`, a part-select of a literal, which Yosys rejects.
+The multiplier now compares the full 3-bit operation instead. The synth flow
+also now passes `--define=SYNTHESIS` to sv2v, so simulation-only code (the
+P-core's assertions, the memories' initial contents) is excluded, as the
+`ifndef` guards always intended. That changed the E-core's LUT count slightly
+from the earlier figure; the new numbers are in the results documents.
+
+### No clock-frequency figure, deliberately
+
+I tried Yosys's `ltp` longest-path pass as a timing proxy. On generic gates it
+counts ripple adders bit by bit (both cores came out at about 160 levels,
+which is adder width, not timing); after `synth_xilinx` it does not recognise
+FDCE flip-flops and reports paths straight through registers (thousands of
+cells). Neither is a clock period. Without Vivado or nextpnr there is no
+honest Fmax number, so the comparison is per clock only and the frequency
+question is recorded as open.
+
+### Dhrystone needed gnu89
+
+GCC 15 defaults to C23, which rejects Dhrystone's K&R function definitions.
+The upstream files are compiled unmodified with `-std=gnu89`, their native
+dialect. The driver checks Dhrystone's final globals against the values the
+benchmark says they should hold, so it is a test, not only a report.
+
+### Where the P-core's mispredicts come from
+
+Attributing Dhrystone's 2-cycle gaps in the retirement trace to the control
+transfer before them: returns ≈44%, JALs ≈28%, conditional branches ≈28%. A
+JAL should never mispredict once seen, so those are BTB conflict misses: the
+64-entry BTB is indexed by `pc[7:2]`, and any two control transfers 256 bytes
+apart share an entry. A return-address stack and a larger or set-associative
+BTB are the two obvious improvements; neither is in the plan's specification.

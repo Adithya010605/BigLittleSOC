@@ -1,0 +1,155 @@
+==> lint: 13 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.050 2026-07-01 rev v5.050
+- Verilator: Built from 0.850 MB sources in 14 modules, into 0.424 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.163 s (elab=0.028, cvt=0.089, bld=0.000); cpu 0.151 s on 1 threads; allocated 24.098 MB
+    lint clean (0 warnings)
+==> unit tests
+  alu            PASS  (7 checks)
+  csr_unit       PASS  (11 checks)
+  decoder        PASS  (14 checks)
+  imm_gen        PASS  (7 checks)
+  lsu            PASS  (4 checks)
+  regfile        PASS  (6 checks)
+    unit: 6 passed, 0 failed
+==> building e_core_sim
+   -> /home/adi/Documents/project_planning/risc-v-soc/build/e_core_sim
+==> directed assembly tests
+  branch_basic                 PASS  cycles=196      instret=146     
+  branch_hazard                PASS  cycles=86       instret=67      
+  csr_basic                    PASS  cycles=210      instret=153     
+  csr_perf                     PASS  cycles=377      instret=267     
+  hazard_load_use              PASS  cycles=103      instret=82      
+  hazard_raw                   PASS  cycles=106      instret=89      
+  illegal_encodings            PASS  cycles=1311     instret=874     
+  irq_timer                    PASS  cycles=1371     instret=977     
+  jump_link                    PASS  cycles=98       instret=70      
+  m2_basic                     PASS  cycles=142      instret=106     
+  mem_align                    PASS  cycles=209      instret=170     
+  trap_exceptions              PASS  cycles=652      instret=437     
+  x0_writes                    PASS  cycles=98       instret=74      
+    asm: 13 passed, 0 failed
+==> building e_core_sim
+   -> /home/adi/Documents/project_planning/risc-v-soc/build/e_core_sim
+==> riscv-tests rv32ui-p
+  simple         PASS     cycles=102     instret=77
+  add            PASS     cycles=542     instret=501
+  addi           PASS     cycles=310     instret=278
+  and            PASS     cycles=562     instret=521
+  andi           PASS     cycles=266     instret=234
+  auipc          PASS     cycles=122     instret=94
+  beq            PASS     cycles=379     instret=327
+  bge            PASS     cycles=406     instret=345
+  bgeu           PASS     cycles=431     instret=370
+  blt            PASS     cycles=379     instret=327
+  bltu           PASS     cycles=404     instret=352
+  bne            PASS     cycles=381     instret=327
+  fence_i        SKIP     documented exclusion
+  jal            PASS     cycles=119     instret=91
+  jalr           PASS     cycles=189     instret=151
+  lb             PASS     cycles=323     instret=289
+  lbu            PASS     cycles=323     instret=289
+  lh             PASS     cycles=339     instret=305
+  lhu            PASS     cycles=348     instret=314
+  lw             PASS     cycles=353     instret=319
+  ld_st          PASS     cycles=1169    instret=999
+  lui            PASS     cycles=127     instret=101
+  ma_data        SKIP     documented exclusion
+  or             PASS     cycles=565     instret=524
+  ori            PASS     cycles=273     instret=241
+  sb             PASS     cycles=536     instret=490
+  sh             PASS     cycles=589     instret=543
+  sw             PASS     cycles=596     instret=550
+  st_ld          PASS     cycles=545     instret=519
+  sll            PASS     cycles=570     instret=529
+  slli           PASS     cycles=309     instret=277
+  slt            PASS     cycles=536     instret=495
+  slti           PASS     cycles=305     instret=273
+  sltiu          PASS     cycles=305     instret=273
+  sltu           PASS     cycles=536     instret=495
+  sra            PASS     cycles=589     instret=548
+  srai           PASS     cycles=324     instret=292
+  srl            PASS     cycles=583     instret=542
+  srli           PASS     cycles=318     instret=286
+  sub            PASS     cycles=534     instret=493
+  xor            PASS     cycles=564     instret=523
+  xori           PASS     cycles=275     instret=243
+    rv32ui-p: 40 passed, 0 failed, 2 skipped
+==> building e_core_sim
+   -> /home/adi/Documents/project_planning/risc-v-soc/build/e_core_sim
+==> C software tests
+  bubble_sort          PASS  cycles=12523     instret=10075     CPI=1.243
+  fib                  PASS  cycles=511036    instret=473764    CPI=1.079
+  hello                PASS  cycles=675       instret=487       CPI=1.386
+  memcpy_test          PASS  cycles=298242    instret=235936    CPI=1.264
+  perf_counters        PASS  cycles=14999     instret=11726     CPI=1.279
+    sw: 5 passed, 0 failed
+==> building e_core_sim
+   -> /home/adi/Documents/project_planning/risc-v-soc/build/e_core_sim
+==> randomised lockstep: 200 programs x 3 seeds x {0, random} waits
+  seed group 1 done (200 passed so far)
+  seed group 2 done (400 passed so far)
+  seed group 3 done (600 passed so far)
+    random: 600 passed, 0 failed
+==> mutation testing: 8 tests x 3 latency configs (0 2 random:7) per mutation
+  no_fwd_rs1               EQUIVALENT survived as documented
+  no_fwd_rs2               EQUIVALENT survived as documented
+  no_regfile_bypass        EQUIVALENT survived as documented
+  no_fwd_no_bypass_all     KILLED    by  8 test(s), first: m2_basic@0
+  no_load_use_stall        EQUIVALENT survived as documented
+  no_stall_term            EQUIVALENT survived as documented
+  no_stall_no_bypass       KILLED    by  5 test(s), first: m2_basic@0
+  no_x0_write_mask         EQUIVALENT survived as documented
+  x0_reads_storage         EQUIVALENT survived as documented
+  x0_fully_writable        KILLED    by  7 test(s), first: m2_basic@0
+  fwd_ignores_x0           KILLED    by  2 test(s), first: hazard_raw@0
+  jalr_keeps_lsb           KILLED    by  1 test(s), first: jump_link@0
+  branch_always_taken      KILLED    by  3 test(s), first: m2_basic@0
+  branch_never_taken       KILLED    by  8 test(s), first: m2_basic@0
+  branch_target_no_jalr    KILLED    by  3 test(s), first: branch_hazard@0
+  no_wrongpath_discard     KILLED    by  3 test(s), first: m2_basic@2
+  redirect_keeps_ifid      KILLED    by  3 test(s), first: m2_basic@0
+  no_skid_buffer           KILLED    by  4 test(s), first: m2_basic@random:7
+  stall_ignores_ex_ready   KILLED    by  5 test(s), first: m2_basic@random:7
+  ex_ready_ignores_rvalid  KILLED    by  8 test(s), first: m2_basic@2
+  mem_gnt_not_cleared      KILLED    by  7 test(s), first: m2_basic@2
+  lsu_be_always_word       KILLED    by  1 test(s), first: mem_align@0
+  lsu_no_sign_extend       KILLED    by  1 test(s), first: mem_align@0
+
+    mutations: 16 killed, 7 equivalent (documented), 0 unexpected, 0 not evaluated
+==> building e_core_sim_cov
+   -> /home/adi/Documents/project_planning/risc-v-soc/build/e_core_sim_cov
+==> coverage: replaying 178 programs
+================================================================
+scope           kind           hit   total       pct
+----------------------------------------------------------------
+rtl/common      line           154     154   100.00%
+rtl/common      toggle        4060    5002    81.17%
+rtl/e_core      line            38      38   100.00%
+rtl/e_core      toggle        7493    9068    82.63%
+----------------------------------------------------------------
+TOTAL           line+toggle   11745   14262    82.35%
+================================================================
+
+toggle shortfall by signal (worst first):
+  file:line                                   unhit     bits
+  rtl/e_core/e_core_top.sv:126                  166      256
+  rtl/common/csr_unit.sv:75                     116      128
+  rtl/common/csr_unit.sv:81                     111      512
+  rtl/common/csr_unit.sv:82                     111      512
+  rtl/common/csr_unit.sv:70                      96      128
+  rtl/e_core/e_core_top.sv:388                   91      128
+  rtl/e_core/e_core_top.sv:62                    91      128
+  rtl/e_core/e_core_if_stage.sv:82               85      128
+  rtl/e_core/e_core_if_stage.sv:76               80      128
+  rtl/e_core/e_core_if_stage.sv:71               78      128
+  rtl/e_core/e_core_top.sv:131                   78      192
+  rtl/e_core/e_core_if_stage.sv:72               76      128
+  rtl/common/csr_unit.sv:49                      58       64
+  rtl/common/csr_unit.sv:50                      58       64
+  rtl/common/csr_unit.sv:85                      58       64
+  TOTAL                                        2517    14070
+
+================================================
+  All E-Core regressions passed.
+================================================
+make test  316.49s user 46.25s system 193% cpu 3:07.86 total

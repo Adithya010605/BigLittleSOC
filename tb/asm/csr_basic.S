@@ -68,7 +68,11 @@
     csrr    x22, mhartid
     CHECK_EQ x22, 0, 15
     csrr    x23, misa
+#ifdef CORE_HAS_M
+    CHECK_EQ x23, 0x40001100, 16     /* RV32IM */
+#else
     CHECK_EQ x23, 0x40000100, 16     /* RV32I */
+#endif
     csrr    x24, mvendorid
     CHECK_EQ x24, 0, 17
 

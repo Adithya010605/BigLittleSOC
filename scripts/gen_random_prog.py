@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Constrained-random RV32I_Zicsr program generator for lockstep testing.
+"""Constrained-random RV32I_Zicsr / RV32IM_Zicsr program generator for
+lockstep testing.
 
 The generator's job is to produce programs that are *interesting to a pipeline*
 rather than merely legal: dense register reuse so that read-after-write hazards
@@ -31,6 +32,20 @@ Registers are partitioned so the program cannot destroy its own preconditions:
   x5..x29   the working pool that random instructions read and write
   x30, x31  the epilogue and the trap handler
 
+Two options widen the instruction mix for the P-core. Both are off by default,
+so a given seed produces exactly the same program for the E-core as it always
+has:
+
+  --rv32m     multiplies and divides, with their operands often forced to the
+              values the ISA special-cases (zero divisor, INT_MIN / -1) or that
+              stress the datapath (all-ones, sign bit alone)
+  --extended  constructs aimed at a deeper pipeline and a branch predictor:
+              JALR through a computed address (to a new target each time, so
+              the BTB mispredicts), a store of a value loaded by the
+              instruction just before it (the MEM->MEM forwarding path), a
+              jump to a misaligned target and an illegal instruction word
+              (both trap, and the handler resumes after them)
+
 Cycle-dependent CSRs (mcycle, minstret, the performance counters, mip) are
 never read: their values cannot be predicted by an architectural model, and
 while the lockstep checker tolerates that, excluding them keeps a mismatch
@@ -50,11 +65,17 @@ SHIFT_I = ["slli", "srli", "srai"]
 BRANCHES = ["beq", "bne", "blt", "bge", "bltu", "bgeu"]
 LOADS = [("lb", 1), ("lbu", 1), ("lh", 2), ("lhu", 2), ("lw", 4)]
 STORES = [("sb", 1), ("sh", 2), ("sw", 4)]
+MULDIV = ["mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"]
+# Operand values the M extension special-cases, or that exercise the
+# datapath's extremes.
+MD_SPECIAL = [0, 1, -1, 0x7FFFFFFF, -0x80000000, 2, -2, 0x10000]
 
 
 class Gen:
-    def __init__(self, rng):
+    def __init__(self, rng, rv32m=False, extended=False):
         self.rng = rng
+        self.rv32m = rv32m
+        self.extended = extended
         self.out = []
         self.n = 0
         # A small hot pool makes dependent instructions land next to each
@@ -131,7 +152,33 @@ class Gen:
         # an expensive NOP that exercises trap entry and MRET.
         self.emit("ecall")
 
+    def muldiv(self):
+        op = self.rng.choice(MULDIV)
+        a, b = self.reg(), self.reg()
+        # Force an operand to a special value about a third of the time; the
+        # rest use whatever the random program has computed.
+        if self.rng.random() < 0.35:
+            self.emit("li x%d, %d" % (b, self.rng.choice(MD_SPECIAL)))
+        if self.rng.random() < 0.2:
+            self.emit("li x%d, %d" % (a, self.rng.choice(MD_SPECIAL)))
+        self.emit("%s x%d, x%d, x%d" % (op, self.reg(), a, b))
+
+    def load_then_store(self):
+        """A store of the value loaded by the instruction just before it."""
+        r = self.reg()
+        off = self.rng.randrange(0, SCRATCH_WORDS * 4 - 4, 4)
+        self.emit("lw x%d, %d(x1)" % (r, off))
+        name, align = self.rng.choice(STORES)
+        off2 = self.rng.randrange(0, SCRATCH_WORDS * 4 - 4, align)
+        self.emit("%s x%d, %d(x1)" % (name, r, off2))
+
     def any_simple(self):
+        if self.rv32m and self.rng.random() < 0.12:
+            self.muldiv()
+            return
+        if self.extended and self.rng.random() < 0.04:
+            self.load_then_store()
+            return
         r = self.rng.random()
         if r < 0.34:
             self.alu_rr()
@@ -148,6 +195,30 @@ class Gen:
         else:
             self.csr()
 
+    def jalr_forward(self, tag):
+        """JALR through a computed address to a label ahead of it."""
+        target = "jr_%d" % tag
+        base = self.reg()
+        self.emit("la x%d, %s" % (base, target))
+        self.emit("jalr x%d, 0(x%d)" % (self.reg(), base))
+        for _ in range(self.rng.randint(1, 3)):
+            self.any_simple()
+        self.label(target)
+
+    def jalr_misaligned(self, tag):
+        """A jump whose target is not word-aligned: it traps (cause 0) and the
+        handler resumes at the next instruction."""
+        target = "jm_%d" % tag
+        base = self.reg()
+        self.emit("la x%d, %s" % (base, target))
+        self.emit("addi x%d, x%d, 2" % (base, base))
+        self.emit("jalr x%d, 0(x%d)" % (self.reg(), base))
+        self.label(target)
+
+    def illegal(self):
+        """An all-zero word: illegal instruction, skipped by the handler."""
+        self.emit(".word 0")
+
     def loop(self, tag):
         """A counted backward loop. x4 is reserved so nothing else can touch it."""
         iters = self.rng.randint(2, 6)
@@ -159,9 +230,9 @@ class Gen:
         self.emit("bne x4, x0, loop_%d" % tag)
 
 
-def generate(seed, n_blocks):
+def generate(seed, n_blocks, rv32m=False, extended=False):
     rng = random.Random(seed)
-    g = Gen(rng)
+    g = Gen(rng, rv32m=rv32m, extended=extended)
 
     body = []
     tag = 0
@@ -178,6 +249,16 @@ def generate(seed, n_blocks):
             g.loop(tag)
         else:
             g.ecall()
+        if extended:
+            # Drawn from a separate stream so that adding these constructs does
+            # not perturb the main sequence above.
+            x = rng.random()
+            if x < 0.10:
+                g.jalr_forward(tag)
+            elif x < 0.13:
+                g.jalr_misaligned(tag)
+            elif x < 0.15:
+                g.illegal()
         tag += 1
     body = g.out
 
@@ -223,10 +304,16 @@ def main():
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--blocks", type=int, default=60,
                     help="number of random blocks (default 60)")
+    ap.add_argument("--rv32m", action="store_true",
+                    help="also emit M-extension multiplies and divides")
+    ap.add_argument("--extended", action="store_true",
+                    help="also emit JALR, load->store, misaligned-jump and "
+                         "illegal-instruction constructs")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     with open(args.out, "w") as f:
-        f.write(generate(args.seed, args.blocks))
+        f.write(generate(args.seed, args.blocks, rv32m=args.rv32m,
+                         extended=args.extended))
 
 
 if __name__ == "__main__":
