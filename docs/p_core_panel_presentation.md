@@ -147,7 +147,7 @@ memory the stall grows automatically.
 `lw x5; sw x5, ...` (a copy loop) needs **no stall**. The store takes its data
 from MEM/WB when it reaches MEM. The same refresh idea keeps `data_wdata_o`
 stable from request to grant, as the bus protocol requires. This helps
-`memcpy` and Dhrystone's record copies. Only the store *data* is exempt; the
+`memcpy` and any code that copies records. Only the store *data* is exempt; the
 store *address* still interlocks.
 
 ### 8. Radix-4 Booth multiplier (`p_core_mul.sv`): 4 cycles
@@ -235,7 +235,7 @@ be compared counter for counter.
 |---|---|
 | Passes rv32ui | **41/41 pass** (including `fence_i`). `ma_data` is skipped because misaligned accesses trap by specification |
 | Passes rv32um | **8/8 pass** (`mul mulh mulhsu mulhu div divu rem remu`) |
-| Runs Dhrystone with measurable IPC | **Yes**, and the final values are checked. **CPI 1.181 (IPC 0.847), 0.919 DMIPS/MHz** |
+| Runs benchmark programs with measurable IPC | **Yes**: 6 C programs, outputs checked. Total **CPI 1.055 (IPC 0.948)**, 1.11× faster than the E-core |
 
 ## B.2 Verification results
 
@@ -288,38 +288,7 @@ be compared counter for counter.
 | Non-branch aliasing a trained branch's BTB index (tag check) | 7 |
 | Stale BTB entry after self-modifying code | 5 (would be 8 without invalidation) |
 
-## B.3 Performance: Dhrystone 2.1 (500 runs, zero wait states, same clock)
-
-| Metric | E-core (RV32I, 3-stage) | P-core (RV32IM, 5-stage) | Change |
-|---|---:|---:|---:|
-| Cycles | 337,537 | 309,584 | **−8.3%** |
-| Instructions retired | 277,029 | 262,032 | −5.4% (hardware MUL/DIV) |
-| CPI | 1.218 | **1.181** | −3.0% |
-| IPC | 0.821 | **0.847** | +3.1% |
-| Cycles per run | 675.1 | 619.2 | |
-| **DMIPS/MHz** | 0.843 | **0.919** | **+9.0%** |
-| Speed-up per clock | 1.00× | **1.09×** | |
-
-### P-core CPI stack on Dhrystone (the cycles add up exactly)
-
-| Component | Cycles | Per run | CPI contribution |
-|---|---:|---:|---:|
-| Base (1 instruction/cycle) | 262,032 | 524 | 1.000 |
-| Branch mispredicts (9,026 × 2 cycles) | 18,052 | 18 mispredicts | 0.069 |
-| MUL/DIV busy (`mhpmcounter8`) | 17,500 | 35 (= 1 DIV 32 + 1 MUL 3) | 0.067 |
-| Load-use / CSR interlock (`mhpmcounter9`) | 12,000 | 24 | 0.046 |
-| **Total** | **309,584** | 619.2 | **1.181** |
-
-262,032 + 18,052 + 17,500 + 12,000 = **309,584**, the measured cycle count
-exactly. The three counters **account for every lost cycle**. This is a strong
-slide, because it shows the counters are correct and exactly where the time
-goes.
-
-Where the mispredicts come from (from the retirement trace): **returns ≈ 44%**
-(no return-address stack), **JALs ≈ 28%** (BTB conflicts: `pc[7:2]` indexing
-means any two transfers 256 B apart collide), **conditional branches ≈ 28%**.
-
-## B.4 Performance: C programs (whole-program cycles, zero wait states)
+## B.3 Performance: C programs (whole-program cycles, zero wait states, same clock)
 
 | Program | E-core cycles | P-core cycles | Speed-up | Why |
 |---|---:|---:|---:|---|
@@ -328,7 +297,23 @@ means any two transfers 256 B apart collide), **conditional branches ≈ 28%**.
 | add_demo | 4,915 | 3,893 | 1.26× | |
 | memcpy_test | 298,242 | 240,549 | **1.24×** | same instruction count; no-stall load→store + predicted loops |
 | hello | 675 | 631 | 1.07× | |
-| fib | 511,036 | 500,623 | 1.02× | recursion: returns mispredict (no RAS) |
+| fib | 511,036 | 500,623 | 1.02× | recursion: returns mispredict (no return-address stack) |
+| **Total** | **842,390** | **760,576** | **1.11×** | |
+
+## B.4 Where the speed-up comes from
+
+The cycle count of a program is **instructions × CPI**, so a core can win in
+two ways, and the P-core uses both:
+
+| Source | Example | E-core | P-core |
+|---|---|---|---|
+| **Fewer instructions** (hardware MUL/DIV instead of a libgcc software loop) | `perf_counters` | 11,726 instructions | 5,598 (−52%) |
+| **Lower CPI on the same instructions** (predicted branches, no load→store stall) | `memcpy_test` | CPI 1.264 | CPI **1.020**, same 235,936 instructions |
+
+The performance counters show where the P-core still loses cycles:
+`mhpmcounter7` (mispredicts, 2 cycles each), `mhpmcounter8` (waiting on
+MUL/DIV) and `mhpmcounter9` (load-use interlock). `p_perf` and
+`branch_predict` check those counters for exact values.
 
 ## B.5 Area (Yosys `synth_xilinx`, Xilinx 7-series, estimate)
 
@@ -350,12 +335,12 @@ BTB valid bits. The predictor tables map to distributed RAM, as intended.
 | Limitation | Reason / plan |
 |---|---|
 | **No Fmax figure** | No place-and-route tool (Vivado/nextpnr) is installed. Yosys `ltp` is not a timing estimate (tried; it counts ripple-adder bits). Measuring it is in Phase 8 FPGA bring-up |
-| Only 1.09× on Dhrystone per clock | The E-core is a strong baseline (it resolves branches in ID for a 1-cycle penalty). The 5-stage pipeline's main benefit is expected to be clock frequency, which is not measured yet |
+| Only 1.11× overall per clock | The E-core is a strong baseline (it resolves branches in ID for a 1-cycle penalty). The 5-stage pipeline's main benefit is expected to be clock frequency, which is not measured yet |
 | No return-address stack, direct-mapped BTB | The plan specified only a BHT + BTB. A RAS and a 2-way BTB are the next improvements |
 | Interrupts not in lockstep runs | The ISS cannot know when an async interrupt arrives. Covered by `irq_timer` and `irq_muldiv` (interrupt at 64 points through a MUL/DIV sequence) |
 | `ma_data` skipped | Misaligned accesses trap by design |
 | Toggle coverage 82–83% | Structural: hardwired `mie`/`mip` bits, upper halves of 64-bit counters (need about 2³² events), address bits ≥ 18 unused in a 192 KiB map |
-| CoreMark not ported | The plan listed it. Dhrystone plus 6 C programs were used |
+| No standard benchmark suite | CoreMark is not ported; the comparison uses the 6 C test programs |
 | No caches yet | Phase 3, behind the existing valid/ready ports |
 
 ---
@@ -372,10 +357,9 @@ cycles (above 1.00× means the P-core is faster).
 
 | Metric | E-core | P-core | Winner |
 |---|---:|---:|---|
-| Dhrystone DMIPS/MHz | 0.843 | **0.919** | P (+9.0%) |
-| Dhrystone CPI | 1.218 | **1.181** | P |
-| Dhrystone cycles (500 runs) | 337,537 | **309,584** | P (1.09×) |
-| Best C-program speed-up | – | **1.93×** (`perf_counters`) | P |
+| C programs, total cycles | 842,390 | **760,576** | P (1.11×) |
+| C programs, total CPI | 1.145 | **1.055** | P |
+| Best speed-up | – | **1.93×** (`perf_counters`) | P |
 | Short, cold code (rv32ui suite total) | **16,426 cycles** | 18,005 cycles | E (P is 0.91×) |
 | LUTs | **2,249** | 5,273 | E (2.3× smaller) |
 | Flip-flops | **968** | 1,907 | E (2.0× smaller) |
@@ -415,48 +399,7 @@ small, efficient core for light work, and a bigger core for heavy work.
 | External interface | valid/ready I and D ports, 3 IRQs, RVFI | **identical** |
 | RTL files linted | 13 | 18 |
 
-## D.3 Dhrystone 2.1 (500 runs, final values verified on both)
-
-| Metric | E-core | P-core | P vs E |
-|---|---:|---:|---:|
-| Cycles | 337,537 | 309,584 | −8.3% |
-| Instructions retired | 277,029 | 262,032 | −5.4% |
-| CPI | 1.218 | 1.181 | −3.0% |
-| IPC | 0.821 | 0.847 | +3.1% |
-| Cycles per run | 675.1 | 619.2 | −55.9 |
-| DMIPS/MHz | 0.843 | 0.919 | +9.0% |
-| Conditional branches retired | 48,501 | 43,501 | −10.3% |
-| …taken | 30,000 | 29,000 | |
-| Loads + stores retired | 102,511 | 102,511 | same |
-| Stall cycles (`mhpmcounter3`) | 13,006 | 29,500 | |
-| Mispredicts (`mhpmcounter7`) | n/a | 9,026 | |
-| MUL/DIV busy (`mhpmcounter8`) | n/a | 17,500 | |
-| Interlock cycles (`mhpmcounter9`) | n/a | 12,000 | |
-
-The P-core retires fewer instructions because one hardware MUL or DIV replaces
-a libgcc call loop, and fewer branches because those libgcc loops are gone.
-Loads and stores are identical, which shows both cores ran the same program.
-
-### Where each core loses cycles (per Dhrystone run)
-
-| Lost cycles per run | E-core | P-core |
-|---|---:|---:|
-| Taken conditional branches (1 cycle each) | 60.0 | – |
-| Jumps: JAL/JALR (1 cycle each)¹ | 35.0 | – |
-| Mispredicts (2 cycles each) | – | 36.1 (18 mispredicts) |
-| Data stalls | 26.0 | 24.0 (interlock) |
-| MUL/DIV busy | – | 35.0 |
-| **Total cycles above 1 per instruction** | **121.0** | **95.1** |
-| Instructions per run | 554.1 | 524.1 |
-
-¹ Derived: the E-core has no jump counter, so this is the remaining cycles
-after subtracting taken branches and stalls from the total. The E-core pays 1
-cycle on every taken branch and jump, and it happens ~95 times per run. The
-P-core predicts most of them for free but pays 2 cycles on each of its 18
-mispredicts, plus 35 cycles for the hardware MUL/DIV. The net saving is
-about 26 cycles per run, plus 30 fewer instructions.
-
-## D.4 C programs (whole program, including start-up code)
+## D.3 C programs (whole program, including start-up code)
 
 | Program | E cycles | E instret | E CPI | P cycles | P instret | P CPI | Speed-up |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -466,7 +409,7 @@ about 26 cycles per run, plus 30 fewer instructions.
 | memcpy_test | 298,242 | 235,936 | 1.264 | 240,549 | 235,936 | **1.020** | 1.24× |
 | hello | 675 | 487 | 1.386 | 631 | 487 | 1.296 | 1.07× |
 | fib | 511,036 | 473,764 | 1.079 | 500,623 | 470,300 | 1.064 | 1.02× |
-| **Total** | **842,390** | **735,691** | 1.145 | **760,576** | **720,144** | 1.056 | **1.11×** |
+| **Total** | **842,390** | **735,691** | 1.145 | **760,576** | **721,084** | 1.055 | **1.11×** |
 
 Two kinds of gain:
 * **Fewer instructions** (hardware M extension): `perf_counters` retires 52%
@@ -477,7 +420,7 @@ Two kinds of gain:
   drops from 1.264 to **1.020**. That comes from the no-stall load→store path
   and predicted loop branches.
 
-## D.5 Short, cold code: where the E-core wins
+## D.4 Short, cold code: where the E-core wins
 
 The compliance and directed tests are mostly straight-line code where each
 branch runs once or a few times, so the predictor never warms up.
@@ -503,7 +446,7 @@ about 10% faster per clock, because its branches cost 1 cycle and mine cost 2
 until the predictor learns. On real programs with loops, the predictor learns
 and the P-core wins. That is why a big.LITTLE system has both."
 
-## D.6 Verification, same gates on both
+## D.5 Verification, same gates on both
 
 | Gate | E-core | P-core |
 |---|---|---|
@@ -531,7 +474,7 @@ behaviours are implemented twice (e.g. explicit forwarding **and** a
 write-first register file). Each E-core equivalent is paired with a combined
 mutation that removes both copies, and that combined one is killed.
 
-## D.7 Area (Yosys `synth_xilinx`, 7-series estimate, same flow)
+## D.6 Area (Yosys `synth_xilinx`, 7-series estimate, same flow)
 
 | Resource | E-core | P-core | P / E |
 |---|---:|---:|---:|
@@ -543,21 +486,21 @@ mutation that removes both copies, and that combined one is killed.
 | RAM32M (register file) | 12 | 12 | same |
 | RAM64M (BHT + BTB) | 0 | 23 | new |
 
-Performance per LUT on Dhrystone, per clock: E-core 0.843 / 2,249 = 0.375
-DMIPS/MHz per 1K LUTs; P-core 0.919 / 5,273 = 0.174. The E-core is about
-**2.1× more area-efficient**, which is why it is the efficiency core. The
+Performance per LUT, per clock: the P-core is 1.11× faster over the C
+programs but 2.34× larger, so the E-core does about **2.1× more work per
+LUT**, which is why it is the efficiency core. The
 P-core's case rests on absolute speed: more per clock on real code, much more
 on M-heavy code, and (to be measured) a higher clock.
 
-## D.8 Comparison summary in one sentence per metric
+## D.7 Comparison summary in one sentence per metric
 
-* **Speed per clock:** P-core 1.09× on Dhrystone, 1.11× across the C programs,
+* **Speed per clock:** P-core 1.11× across the C programs,
   up to 1.93× on multiply/divide code; 0.91× on short cold code.
 * **Instructions:** P-core retires up to 52% fewer, thanks to the M extension.
-* **CPI:** P-core is lower on real programs (1.181 vs 1.218 Dhrystone; 1.020 vs
-  1.264 `memcpy`).
+* **CPI:** P-core is lower on real programs (1.055 vs 1.145 over the C
+  programs; 1.020 vs 1.264 on `memcpy`).
 * **Area:** P-core is 2.3× the LUTs and 2.0× the flip-flops.
-* **Efficiency:** E-core gives about 2.1× more Dhrystone per LUT.
+* **Efficiency:** E-core does about 2.1× more work per LUT.
 * **Correctness:** both pass their full compliance suites, lockstep, 100% line
   coverage and mutation with zero unexplained survivors.
 * **Clock frequency:** not measured for either; that is the key open question.
@@ -570,13 +513,13 @@ on M-heavy code, and (to be measured) a higher clock.
 
 > "I built a 5-stage RV32IM performance core with branch prediction and
 > hardware multiply/divide. It passes all compliance tests, and I verified it
-> with a method that even checks the performance features. It is 9% faster
-> per clock on Dhrystone and up to 1.9× on multiply-heavy code, and the
-> performance counters account for every lost cycle."
+> with a method that even checks the performance features. Across the test
+> programs it is 1.11× faster per clock, and up to 1.93× on multiply-heavy
+> code."
 
 Keep coming back to three ideas: **it works** (compliance + lockstep), **it is
-proven** (mutation + coverage + counters), **I understand it** (CPI stack,
-honest limitations).
+proven** (mutation + coverage + counters), **I understand it** (where the
+speed-up comes from, honest limitations).
 
 ## C.2 Suggested slides (12–15 minutes, 12 slides)
 
@@ -591,8 +534,8 @@ honest limitations).
 | 7 | Precise traps + FENCE.I | 0:45 | Commit at MEM; FENCE.I = flush + refetch | "The E-core's trap unit is reused unchanged." |
 | 8 | Verification method | 1:30 | The 5 levels: unit → directed (5 latency configs) → compliance → lockstep vs ISS → mutation, plus assertions + coverage | "The ISS's M extension uses 64-bit host arithmetic, nothing like Booth, so the model and the RTL can't share a bug." |
 | 9 | Verification results | 1:00 | B.2 table: 53.7M unit checks, 49/50 compliance, 600×2 lockstep, 30/32 mutants killed, 100% line | Give the numbers, then one story: the `0/d3` test gap found by mutation |
-| 10 | E-core vs P-core | 1:30 | Part D headline table (D.1) + C-program speed-ups (bar chart) | "1.09× per clock on Dhrystone, up to 1.93× on multiply-heavy code. On short cold code the P-core is about 9% slower; that is the price of a deeper pipeline." |
-| 11 | CPI stack | 1:00 | B.3 stack as a stacked bar: 1.000 + 0.069 + 0.067 + 0.046 = 1.181 | "The counters account for every cycle exactly. Mispredicts are the biggest cost, and 44% of them are returns, so a return-address stack is next." |
+| 10 | E-core vs P-core | 1:30 | Part D headline table (D.1) + C-program speed-ups (bar chart) | "1.11× per clock across the programs, up to 1.93× on multiply-heavy code. On short cold code the P-core is about 9% slower; that is the price of a deeper pipeline." |
+| 11 | Where the speed comes from | 1:00 | B.4: `perf_counters` (52% fewer instructions) and `memcpy_test` (same instructions, CPI 1.264 → 1.020) | "Two ways to win: run fewer instructions, or run them with fewer wasted cycles. The P-core does both." |
 | 12 | Area, limitations, next steps | 1:00 | Area table; the honest list; Phase 3 caches, RAS, Fmax on FPGA | Say the limitations yourself. It builds trust |
 
 Keep 3–5 minutes for questions.
@@ -603,8 +546,8 @@ Keep 3–5 minutes for questions.
 * **A pipeline timing chart** (cycles across, instructions down) for `lw x5 →
   add x6,x5` (1 bubble) next to `lw x5 → sw x5` (0 bubbles). This explains the
   store exemption in 5 seconds.
-* **A stacked bar CPI chart**: base / mispredict / MUL-DIV / interlock.
-* **A speed-up bar chart** for the six C programs + Dhrystone, sorted.
+* **A two-bar chart per program**: instructions and CPI, E-core vs P-core.
+* **A speed-up bar chart** for the six C programs, sorted.
 * **A verification pyramid**: unit at the bottom, mutation at the top, with
   numbers on each layer.
 * One **GTKWave screenshot** of a mispredict: the redirect, two squashed
@@ -619,10 +562,19 @@ Existing decks to reuse from: `riscv_soc_review2.pptx`,
 Build first so nothing compiles live:
 
 ```sh
-make p_core                              # build the P-core simulator beforehand
+make sw-tests                            # C programs on the E-core (builds them)
+make CORE=p_core sw-tests                # the same programs on the P-core
+make bench                               # E-core vs P-core comparison table (~5 s)
 make CORE=p_core riscv-tests             # compliance: rv32ui + rv32um pass
-make bench                               # Dhrystone on both cores + comparison table
 make wave TEST=branch_predict            # then: gtkwave build/branch_predict.vcd
+```
+
+The clearest single demo is one program on both cores, side by side (same
+output, different cycle count):
+
+```sh
+build/e_core_sim --elf build/sw/bubble_sort.elf        --waits=0   # cycles=12523
+build/p_core_sim --elf build/p_core/sw/bubble_sort.elf --waits=0   # cycles=7113
 ```
 
 Backup plan: keep `docs/logs/make_test_2026-09-26.log` open in a terminal
@@ -631,8 +583,8 @@ screenshots ready. Never let a failed demo be the last thing the panel sees.
 
 ## C.4 Likely panel questions, with answers
 
-**Q: Only 9% faster on Dhrystone for 2.3× the area. Is it worth it?**
-A: Per clock, yes, 1.09×. But a 5-stage pipeline mainly exists to raise the
+**Q: Only 1.11× faster for 2.3× the area. Is it worth it?**
+A: Per clock, yes, 1.11× across the test programs. But a 5-stage pipeline mainly exists to raise the
 clock frequency, and I haven't measured that yet because it needs place and
 route. The E-core resolves branches in ID for a 1-cycle penalty, so it is a
 strong baseline per clock. On multiply/divide code the gain is up to 1.93×.
@@ -676,9 +628,9 @@ instruction's pc, instruction, rd value, memory address/data/mask and trap is
 compared, on 600 random programs at two latency settings.
 
 **Q: Why no return-address stack?**
-A: The plan specified a BHT + BTB. My measurements show returns cause 44% of
-Dhrystone mispredicts, so a RAS is the clear next step, and the data backs
-that up.
+A: The plan specified a BHT + BTB. Without a RAS, a function called from
+several places mispredicts its return, which is why recursive `fib` gains only
+1.02×. A RAS is the clear next step.
 
 **Q: Why is toggle coverage only 83%?**
 A: The missed bits are structural: hardwired CSR bits, the upper halves of
@@ -711,7 +663,7 @@ for a second benchmark.
 * **Don't read the tables aloud.** Point to the one number that matters on
   each slide.
 * **Rehearse to 12 minutes** so you have room for questions.
-* Terms to be able to define in one sentence: CPI/IPC, DMIPS/MHz, BHT, BTB,
+* Terms to be able to define in one sentence: CPI/IPC, BHT, BTB,
   forwarding, interlock, precise trap, mutation testing, equivalent mutant,
   lockstep, RVFI, toggle coverage.
 
@@ -719,7 +671,7 @@ for a second benchmark.
 
 - [ ] Re-run `make test` on the presentation machine; confirm `EXIT=0`
 - [ ] Build the simulators ahead of time; have the VCD open in GTKWave
-- [ ] Slides: pipeline diagram, hazard timing chart, CPI stack, speed-up chart
+- [ ] Slides: pipeline diagram, hazard timing chart, speed-up chart
 - [ ] Log file and screenshots ready as a backup
 - [ ] Practise the answers to the Fmax and "only 9%" questions out loud
 - [ ] Time the talk: 12 minutes + questions

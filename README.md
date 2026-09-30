@@ -54,7 +54,8 @@ full figures. In summary: lint clean in both RVFI elaborations; 5 new unit
 benches (≈54M checks); 20 directed tests at 5 latency configurations;
 `rv32ui-p` + `rv32um-p` + `fence_i` at zero and random latency; 600 randomised
 RV32IM lockstep programs; mutation testing with no unexplained survivors;
-100% line coverage; Dhrystone runs with its results verified.
+100% line coverage; 1.11× faster than the E-core per clock over the C
+programs (`make bench`).
 
 ### E-core
 
@@ -121,7 +122,7 @@ make test                   # the full acceptance gate
 
 `make test` runs lint and the unit tests, then each core's gate (directed
 assembly → compliance → C programs → randomised lockstep → mutation testing →
-coverage), E-core then P-core, then the Dhrystone benchmarks. It is the gate;
+coverage), E-core then P-core, then the E-core/P-core comparison (`make bench`). It is the gate;
 it must be green with zero warnings. `make e-test` / `make p-test` run one
 core's gate.
 
@@ -147,7 +148,7 @@ make CORE=p_core asm-tests riscv-tests sw-tests
 | `make random` | randomised lockstep against the golden ISS |
 | `make mutation` | verify the tests can actually detect broken RTL |
 | `make coverage` | coverage build + line/toggle report |
-| `make bench` | Dhrystone on both cores + E/P comparison table |
+| `make bench` | C programs on both cores + E/P comparison table |
 | `make synth` | Yosys area estimate, both cores |
 | `make e-test` / `make p-test` | one core's full gate |
 | `make wave TEST=<name>` | rerun one test with tracing → `build/<name>.vcd` |
@@ -164,7 +165,6 @@ tb/integration/ core harness, memory model, ELF loader, golden ISS
 tb/asm/         hand-written self-checking assembly tests (p_core/: P-core only)
 sw/common/      startup code, linker scripts, UART driver
 sw/tests/       C benchmark programs
-sw/bench/       Dhrystone driver (upstream sources compiled unmodified)
 scripts/        build and regression drivers
 syn/            Yosys synthesis script
 docs/           microarchitecture, verification plan, results, lab notebook
