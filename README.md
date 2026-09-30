@@ -107,11 +107,9 @@ cycles ÷ P-Core cycles.
 | ISA | RV32I | RV32IM + real `FENCE.I` | |
 | Pipeline | 3-stage | 5-stage | |
 | Branches | static not-taken, 1-cycle penalty on every taken branch or jump | predicted; 0 cycles if right, 2 if wrong | |
-| **Dhrystone DMIPS/MHz** | 0.843 | **0.919** | **+9.0%** |
-| Dhrystone CPI | 1.218 | **1.181** | −3.0% |
-| Dhrystone cycles (500 runs) | 337,537 | **309,584** | **1.09×** |
-| Dhrystone instructions retired | 277,029 | 262,032 | −5.4% (hardware MUL/DIV) |
-| C programs, all six, total cycles | 842,390 | **760,576** | **1.11×** |
+| **C programs, all six, total cycles** | 842,390 | **760,576** | **1.11×** |
+| C programs, total instructions retired | 735,691 | 721,084 | −2.0% (hardware MUL/DIV) |
+| C programs, total CPI | 1.145 | **1.055** | −7.9% |
 | `perf_counters` (MUL/DIV-heavy) | 14,999 | 7,767 | **1.93×** |
 | `bubble_sort` | 12,523 | 7,113 | 1.76× |
 | `memcpy_test` (same instruction count) | 298,242 (CPI 1.264) | 240,549 (CPI **1.020**) | 1.24× |
@@ -119,7 +117,7 @@ cycles ÷ P-Core cycles.
 | Short one-pass code (40 `rv32ui` tests) | **16,426** | 18,005 | **0.91×** (E-Core faster) |
 | LUTs (Xilinx 7-series, Yosys) | **2,249**¹ | 5,273 | 2.3× larger |
 | Flip-flops | **968** | 1,907 | 2.0× larger |
-| Dhrystone per 1K LUTs | **0.375** | 0.174 | E-Core 2.1× more area-efficient |
+| Work per LUT (speed-up ÷ area) | **1.00** | 0.47 | E-Core 2.1× more area-efficient |
 | Compliance | `rv32ui` 40 pass, 2 skip | `rv32ui` 41 pass + `rv32um` 8/8, 1 skip | |
 | Directed tests (× 5 latency configs) | 13 | 20 | |
 | Randomised lockstep vs golden ISS | 1,200 runs | 1,200 runs (with RV32M) | |
@@ -133,26 +131,30 @@ cycles ÷ P-Core cycles.
 
 **Reading the comparison**
 
-- On real, loop-heavy programs the P-Core does more work per clock: 1.09× on
-  Dhrystone, 1.11× over the C programs, and up to 1.93× on multiply/divide
-  code. The gain comes from two places: fewer instructions (hardware MUL/DIV
+- On real, loop-heavy programs the P-Core does more work per clock: 1.11×
+  over the C programs, and up to 1.93× on multiply/divide code. The gain comes from two places: fewer instructions (hardware MUL/DIV
   instead of libgcc) and lower CPI (predicted branches, and loads feeding
   stores without a stall).
 - On short code that runs once, the E-Core is about 9% faster per clock. The
   predictor has not learnt anything yet, and a wrong guess costs 2 cycles
   against the E-Core's 1.
-- The P-Core costs 2.3× the LUTs, so the E-Core gives about 2.1× more
-  Dhrystone per LUT. That is the big.LITTLE trade-off: a small core for light
+- The P-Core is 1.11× faster but costs 2.3× the LUTs, so the E-Core does
+  about 2.1× more work per LUT. That is the big.LITTLE trade-off: a small core for light
   work, a bigger core for heavy work.
 - A 5-stage pipeline's main expected gain is a higher clock frequency. That is
   not measured yet for either core (no place-and-route tool); it is the open
   question for FPGA bring-up.
 
-Where the P-Core's Dhrystone cycles go, from its own counters (they add up
-exactly to the measured 309,584): 262,032 instructions + 18,052 mispredict
-cycles + 17,500 MUL/DIV busy cycles + 12,000 interlock cycles. Returns cause
-about 44% of the mispredicts, so a return-address stack is the obvious next
-improvement.
+To reproduce the program comparison on the branch:
+
+```sh
+make sw-tests && make CORE=p_core sw-tests   # build and run the C programs on both cores
+make bench                                   # prints the E-Core vs P-Core table (~5 s)
+```
+
+There is no return-address stack yet, so a function called from several
+places mispredicts its return; that is why recursive `fib` gains only 1.02×,
+and a return-address stack is the obvious next improvement.
 
 ---
 
