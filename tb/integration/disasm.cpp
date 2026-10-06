@@ -46,6 +46,9 @@ const char* CsrName(uint32_t a) {
     case 0xB04: return "mhpmcounter4";
     case 0xB05: return "mhpmcounter5";
     case 0xB06: return "mhpmcounter6";
+    case 0xB07: return "mhpmcounter7";
+    case 0xB08: return "mhpmcounter8";
+    case 0xB09: return "mhpmcounter9";
     case 0xB80: return "mcycleh";
     case 0xB82: return "minstreth";
     case 0xF11: return "mvendorid";
@@ -123,8 +126,7 @@ std::string Disassemble(uint32_t insn, uint32_t pc) {
       if (f7 == 0x01) {
         static const char* m[8] = {"mul", "mulh", "mulhsu", "mulhu",
                                    "div", "divu", "rem",    "remu"};
-        return Fmt("%-6s %s, %s, %s   <M-ext: illegal on this core>", m[f3], xd,
-                   x1, x2);
+        return Fmt("%-6s %s, %s, %s", m[f3], xd, x1, x2);
       }
       return Fmt("%-6s %s, %s, %s", name, xd, x1, x2);
     }

@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# Yosys area estimate for the P-Core.
+#
+# Identical in structure to e_core_synth.ys: the input is
+# build/synth/p_core_flat.v, lowered from SystemVerilog by sv2v (see
+# scripts/synth_estimate.sh).
+#
+#   1. generic technology-independent synthesis + stat;
+#   2. synth_xilinx for a 7-series LUT count.
+#
+# There is no timing estimate. Yosys alone cannot give a meaningful one: its
+# `ltp` longest-path pass counts ripple-carry adders bit by bit on generic
+# gates and does not recognise vendor flip-flops after synth_xilinx, so it
+# reports adder width, not clock period. Fmax needs place and route (Vivado
+# or nextpnr), which this flow does not assume is installed.
+# ---------------------------------------------------------------------------
+
+read_verilog build/synth/p_core_flat.v
+hierarchy -check -top p_core_top
+
+# --- pass 1: generic ---
+proc
+opt_expr
+opt_clean
+check
+fsm
+opt
+memory -nomap
+opt_clean
+techmap
+opt -fast
+abc -g cmos2,NAND,NOR,AOI3,OAI3,AOI4,OAI4
+opt_clean
+
+tee -o build/synth/p_core_generic_stat.txt stat -width
+
+# --- pass 2: Xilinx 7-series LUT estimate ---
+design -reset
+read_verilog build/synth/p_core_flat.v
+hierarchy -check -top p_core_top
+
+synth_xilinx -family xc7 -flatten
+
+tee -o build/synth/p_core_xilinx_stat.txt stat -width

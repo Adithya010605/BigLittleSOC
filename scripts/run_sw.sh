@@ -6,12 +6,14 @@ set -uo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BUILD=${BUILD:-$ROOT/build}
-SIM="$BUILD/e_core_sim"
-OUT="$BUILD/sw"
-mkdir -p "$OUT"
 
 # shellcheck source=scripts/toolchain.sh
 . "$ROOT/scripts/toolchain.sh"
+# shellcheck source=scripts/core_config.sh
+. "$ROOT/scripts/core_config.sh"
+SIM="$CORE_SIM"
+OUT="$CORE_OUT/sw"
+mkdir -p "$OUT"
 
 LDS="$ROOT/sw/common/linker.ld"
 COMMON_SRC=("$ROOT"/sw/common/start.S "$ROOT"/sw/common/crt0.c "$ROOT"/sw/common/uart.c)
@@ -25,7 +27,7 @@ if [ ! -x "$SIM" ]; then echo "==> sw: simulator not built yet"; exit 0; fi
 command -v "$RVCC" >/dev/null 2>&1 || { echo "==> sw: no RISC-V compiler ($RVCC)"; exit 1; }
 
 pass=0; fail=0; failed=()
-printf "==> C software tests\n"
+printf "==> C software tests (%s, -march=%s)\n" "$CORE" "$RVARCH"
 for src in "${TESTS[@]}"; do
   name=$(basename "$src" .c)
   elf="$OUT/$name.elf"
@@ -38,7 +40,7 @@ for src in "${TESTS[@]}"; do
   "$ROOT/scripts/gen_hex.sh" "$elf" "$OUT/$name" >/dev/null 2>&1
 
   log="$OUT/$name.log"
-  if ! "$SIM" --elf "$elf" --waits=0 --max-cycles=20000000 \
+  if ! "$SIM" --elf "$elf" --waits=0 --max-cycles=${SW_MAX_CYCLES:-20000000} \
        --uart-out="$OUT/$name.uart" > "$log" 2>&1; then
     printf "  %-20s \033[31mFAIL\033[0m\n" "$name"
     tail -30 "$log" | sed 's/^/      /'

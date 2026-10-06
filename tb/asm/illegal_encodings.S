@@ -71,10 +71,14 @@
     /* ---- register-register with a reserved funct7 ----------------------- */
     EXPECT_ILLEGAL 0x40001033, 47   /* sll with funct7 = 0100000 */
     EXPECT_ILLEGAL 0x40004033, 49   /* xor with funct7 = 0100000 */
+#ifndef CORE_HAS_M
+    /* The M extension is illegal on a core without it. On the P-core these
+       encodings are legal, and tb/asm/p_core/ tests what they compute. */
     EXPECT_ILLEGAL 0x02000033, 51   /* mul  */
     EXPECT_ILLEGAL 0x02004033, 53   /* div  */
     EXPECT_ILLEGAL 0x0200C033, 55   /* divu */
     EXPECT_ILLEGAL 0x02007033, 57   /* remu */
+#endif
 
     /* ---- reserved major opcodes ----------------------------------------- */
     EXPECT_ILLEGAL 0x0000007B, 59

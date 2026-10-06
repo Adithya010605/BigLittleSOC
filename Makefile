@@ -1,19 +1,28 @@
 # ============================================================================
-#  RISC-V SoC — Phase 0/1: E-Core (RV32I_Zicsr, 3-stage, machine mode)
+#  RISC-V SoC — Phases 0-2: E-Core (RV32I_Zicsr, 3-stage) and
+#                           P-Core (RV32IM_Zicsr, 5-stage, BHT + BTB)
 #  Top-level build & regression Makefile.
+#
+#  Per-core targets act on the core named by CORE (default e_core):
+#    make CORE=p_core asm-tests
 #
 #  Primary targets:
 #    make tools        - report toolchain state
-#    make lint         - Verilator lint over all of rtl/  (zero-warning gate)
-#    make unit         - build + run every unit testbench
-#    make e_core       - build the Verilator core simulator
-#    make asm-tests    - build + run tb/asm/*.S
+#    make lint         - Verilator lint of both cores (zero-warning gate)
+#    make unit         - build + run every unit testbench (both cores' units)
+#    make e_core       - build the E-core simulator
+#    make p_core       - build the P-core simulator
+#    make asm-tests    - build + run tb/asm/*.S (+ tb/asm/<core>/*.S)
 #    make sw-tests     - build + run sw/tests/*.c
-#    make riscv-tests  - build + run the rv32ui-p compliance suite
+#    make riscv-tests  - rv32ui-p (and rv32um-p on the P-core) compliance
 #    make random       - randomised lockstep vs the golden ISS
+#    make mutation     - verify the tests detect deliberately broken RTL
 #    make coverage     - coverage build + report
-#    make synth        - Yosys area estimate
-#    make test         - everything except synth (ACCEPTANCE GATE)
+#    make bench        - Dhrystone on both cores + E/P comparison table
+#    make synth        - Yosys area estimate, both cores
+#    make e-test       - the E-core's full gate
+#    make p-test       - the P-core's full gate
+#    make test         - lint + unit + both gates (ACCEPTANCE GATE)
 #    make wave TEST=x  - rerun one test with tracing -> build/x.vcd
 #    make clean
 # ============================================================================
@@ -28,6 +37,9 @@ SW_DIR    := $(ROOT)/sw
 SCRIPTS   := $(ROOT)/scripts
 BUILD     := $(ROOT)/build
 THIRD     := $(ROOT)/third_party
+
+# Core under test for the per-core targets. See scripts/core_config.sh.
+CORE ?= e_core
 
 # ---------------------------------------------------------------------------
 # Toolchain discovery
@@ -102,7 +114,7 @@ VSIM_FLAGS := --cc --exe --build -j 0 -Wall $(VINC) \
 # ---------------------------------------------------------------------------
 .PHONY: help
 help:
-	@echo "E-Core build system.  Targets:"
+	@echo "E-Core / P-Core build system.  Targets:"
 	@grep -E '^[a-z][a-z0-9_-]*:.*?## ' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
@@ -114,8 +126,8 @@ tools: ## Report toolchain state
 	@$(SCRIPTS)/check_tools.sh
 
 .PHONY: lint
-lint: ## Verilator lint over all RTL (must be warning-free)
-	@$(SCRIPTS)/lint.sh
+lint: ## Verilator lint of both cores (must be warning-free)
+	@env -u CORE $(SCRIPTS)/lint.sh
 
 # ---------------------------------------------------------------------------
 # riscv-tests checkout
@@ -141,7 +153,11 @@ unit: | $(BUILD) ## Build and run every unit testbench
 
 .PHONY: e_core
 e_core: | $(BUILD) ## Build the Verilator E-Core simulator
-	@$(SCRIPTS)/run_tests.sh build-core
+	@CORE=e_core $(SCRIPTS)/run_tests.sh build-core
+
+.PHONY: p_core
+p_core: | $(BUILD) ## Build the Verilator P-Core simulator
+	@CORE=p_core $(SCRIPTS)/run_tests.sh build-core
 
 .PHONY: asm-tests
 asm-tests: | $(BUILD) ## Run tb/asm/*.S directed tests
@@ -152,7 +168,7 @@ sw-tests: | $(BUILD) ## Run sw/tests/*.c programs
 	@$(SCRIPTS)/run_tests.sh sw
 
 .PHONY: riscv-tests
-riscv-tests: | $(BUILD) ## Run the rv32ui-p compliance suite
+riscv-tests: | $(BUILD) ## Run the compliance suite(s) for CORE
 	@$(SCRIPTS)/run_tests.sh riscv
 
 .PHONY: random
@@ -167,20 +183,41 @@ mutation: | $(BUILD) ## Verify the tests can detect deliberately broken RTL
 coverage: | $(BUILD) ## Coverage build + report
 	@$(SCRIPTS)/run_tests.sh coverage
 
+.PHONY: bench
+bench: | $(BUILD) ## Dhrystone on both cores + E-core/P-core comparison
+	@$(SCRIPTS)/run_bench.sh
+
 .PHONY: synth
-synth: | $(BUILD) ## Yosys area estimate
-	@$(SCRIPTS)/synth_estimate.sh
+synth: | $(BUILD) ## Yosys area estimate, both cores
+	@env -u CORE $(SCRIPTS)/synth_estimate.sh
 
 .PHONY: wave
 wave: | $(BUILD) ## Rerun one test with tracing: make wave TEST=<name>
 	@if [ -z "$(TEST)" ]; then echo "usage: make wave TEST=<name>"; exit 1; fi
 	@$(SCRIPTS)/run_tests.sh wave $(TEST)
 
+# One core's full gate, in dependency order: the mutation run replays ELFs the
+# earlier suites built, and coverage replays all of them.
+CORE_GATE := asm-tests riscv-tests sw-tests random mutation coverage
+
+.PHONY: e-test
+e-test: ## The E-core's full gate
+	@$(MAKE) --no-print-directory CORE=e_core $(CORE_GATE)
+	@echo "  E-Core gate passed."
+
+.PHONY: p-test
+p-test: ## The P-core's full gate
+	@$(MAKE) --no-print-directory CORE=p_core $(CORE_GATE)
+	@echo "  P-Core gate passed."
+
 .PHONY: test
-test: lint unit asm-tests riscv-tests sw-tests random mutation coverage ## ACCEPTANCE GATE
+test: lint unit ## ACCEPTANCE GATE: lint, unit, both cores' gates, benchmarks
+	@$(MAKE) --no-print-directory e-test
+	@$(MAKE) --no-print-directory p-test
+	@$(MAKE) --no-print-directory bench
 	@echo
 	@echo "================================================"
-	@echo "  All E-Core regressions passed."
+	@echo "  All E-Core and P-Core regressions passed."
 	@echo "================================================"
 
 .PHONY: clean
@@ -191,6 +228,7 @@ clean: ## Remove build products
 # Export discovered settings to the shell scripts.
 export ROOT RTL_DIR TB_DIR SW_DIR SCRIPTS BUILD THIRD
 export VERILATOR YOSYS PYTHON
+export CORE
 export RISCV_PREFIX RVCC RVOBJCOPY RVOBJDUMP RVNM
 export RVARCH RVABI RVCFLAGS RVLDFLAGS RVLIBS
 export RTL_PKG RTL_COMMON RTL_CORE RTL_ALL VINC VSIM_FLAGS
