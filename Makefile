@@ -18,7 +18,7 @@
 #    make random       - randomised lockstep vs the golden ISS
 #    make mutation     - verify the tests detect deliberately broken RTL
 #    make coverage     - coverage build + report
-#    make bench        - Dhrystone on both cores + E/P comparison table
+#    make bench        - C programs on both cores + E/P comparison table
 #    make synth        - Yosys area estimate, both cores
 #    make e-test       - the E-core's full gate
 #    make p-test       - the P-core's full gate
@@ -184,7 +184,7 @@ coverage: | $(BUILD) ## Coverage build + report
 	@$(SCRIPTS)/run_tests.sh coverage
 
 .PHONY: bench
-bench: | $(BUILD) ## Dhrystone on both cores + E-core/P-core comparison
+bench: | $(BUILD) ## C programs on both cores + E-core/P-core comparison
 	@$(SCRIPTS)/run_bench.sh
 
 .PHONY: synth
