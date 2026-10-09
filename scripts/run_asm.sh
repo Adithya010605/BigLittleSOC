@@ -35,6 +35,10 @@ pass=0; fail=0; failed=()
 printf "==> directed assembly tests (%s)\n" "$CORE"
 for src in "${TESTS[@]}"; do
   name=$(basename "$src" .S)
+  if [[ " $CORE_SKIP_TESTS " == *" $name "* ]]; then
+    printf "  %-28s SKIP (not applicable in this configuration)\n" "$name"
+    continue
+  fi
   elf="$OUT/$name.elf"
   if ! "$RVCC" $RVCFLAGS $CORE_ASM_DEFS -I"$ROOT/tb/asm" -T "$LDS" -o "$elf" "$src" ${RVLIBS:--lgcc} \
         > "$OUT/$name.build.log" 2>&1; then

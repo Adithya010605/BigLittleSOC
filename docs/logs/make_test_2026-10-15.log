@@ -1,0 +1,616 @@
+==> lint: e_core_top (RVFI=0), 13 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 0.815 MB sources in 14 modules, into 0.388 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.195 s (elab=0.012, cvt=0.157, bld=0.000); cpu 0.195 s on 1 threads; allocated 27.820 MB
+    lint clean (0 warnings)
+==> lint: e_core_top (RVFI=1), 13 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 0.815 MB sources in 14 modules, into 0.394 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.276 s (elab=0.034, cvt=0.127, bld=0.000); cpu 0.276 s on 1 threads; allocated 27.785 MB
+    lint clean (0 warnings)
+==> lint: p_core_top (RVFI=0), 18 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 1.309 MB sources in 19 modules, into 0.483 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.422 s (elab=0.063, cvt=0.191, bld=0.000); cpu 0.422 s on 1 threads; allocated 29.582 MB
+    lint clean (0 warnings)
+==> lint: p_core_top (RVFI=1), 18 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 1.309 MB sources in 19 modules, into 0.494 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.352 s (elab=0.041, cvt=0.170, bld=0.000); cpu 0.352 s on 1 threads; allocated 29.672 MB
+    lint clean (0 warnings)
+==> lint: soc_top (2P+2E, RVFI=0), 28 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 3.092 MB sources in 29 modules, into 3.488 MB in 5 C++ files needing 0.000 MB
+- Verilator: Walltime 1.681 s (elab=0.180, cvt=1.315, bld=0.000); cpu 1.681 s on 1 threads; allocated 57.125 MB
+    lint clean (0 warnings)
+==> lint: soc_top (2P+2E, RVFI=1), 28 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 3.092 MB sources in 29 modules, into 3.553 MB in 6 C++ files needing 0.000 MB
+- Verilator: Walltime 1.158 s (elab=0.066, cvt=0.958, bld=0.000); cpu 1.158 s on 1 threads; allocated 57.324 MB
+    lint clean (0 warnings)
+==> lint: soc_top (1P+0E, RVFI=1), 28 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 3.092 MB sources in 29 modules, into 1.085 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.426 s (elab=0.084, cvt=0.231, bld=0.000); cpu 0.426 s on 1 threads; allocated 33.668 MB
+    lint clean (0 warnings)
+==> lint: soc_top (0P+1E, RVFI=1), 28 file(s)
+- V e r i l a t i o n   R e p o r t: Verilator 5.052 2026-09-05 rev conda-forge build 
+- Verilator: Built from 3.092 MB sources in 29 modules, into 0.802 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.324 s (elab=0.075, cvt=0.175, bld=0.000); cpu 0.319 s on 1 threads; allocated 32.633 MB
+    lint clean (0 warnings)
+==> unit tests
+  alu                      [32mPASS[0m  (7 checks)
+  csr_unit                 [32mPASS[0m  (11 checks)
+  csr_unit_p               [32mPASS[0m  (11 checks)
+  decoder                  [32mPASS[0m  (14 checks)
+  decoder_rv32m            [32mPASS[0m  (14 checks)
+  imm_gen                  [32mPASS[0m  (7 checks)
+  lsu                      [32mPASS[0m  (4 checks)
+  regfile                  [32mPASS[0m  (6 checks)
+  p_core_bpu               [32mPASS[0m  (5 checks)
+  p_core_div               [32mPASS[0m  (7 checks)
+  p_core_mul               [32mPASS[0m  (7 checks)
+  coherent_mem             [32mPASS[0m  (12 checks)
+  coherent_mem_small       [32mPASS[0m  (4 checks)
+  coherent_mem_wb4         [32mPASS[0m  (2 checks)
+    unit: 14 passed, 0 failed
+==> building e_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/e_core_sim
+==> directed assembly tests (e_core)
+  branch_basic                 [32mPASS[0m  cycles=196      instret=146     
+  branch_hazard                [32mPASS[0m  cycles=86       instret=67      
+  csr_basic                    [32mPASS[0m  cycles=210      instret=153     
+  csr_perf                     [32mPASS[0m  cycles=379      instret=269     
+  hazard_load_use              [32mPASS[0m  cycles=103      instret=82      
+  hazard_raw                   [32mPASS[0m  cycles=106      instret=89      
+  illegal_encodings            [32mPASS[0m  cycles=1311     instret=874     
+  irq_timer                    [32mPASS[0m  cycles=1371     instret=977     
+  jump_link                    [32mPASS[0m  cycles=98       instret=70      
+  m2_basic                     [32mPASS[0m  cycles=142      instret=106     
+  mem_align                    [32mPASS[0m  cycles=209      instret=170     
+  trap_exceptions              [32mPASS[0m  cycles=652      instret=437     
+  x0_writes                    [32mPASS[0m  cycles=98       instret=74      
+    asm: 13 passed, 0 failed
+==> building e_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/e_core_sim
+==> riscv-tests (e_core): rv32ui-p
+  simple         PASS     cycles=102     instret=77
+  add            PASS     cycles=542     instret=501
+  addi           PASS     cycles=310     instret=278
+  and            PASS     cycles=562     instret=521
+  andi           PASS     cycles=266     instret=234
+  auipc          PASS     cycles=122     instret=94
+  beq            PASS     cycles=379     instret=327
+  bge            PASS     cycles=406     instret=345
+  bgeu           PASS     cycles=431     instret=370
+  blt            PASS     cycles=379     instret=327
+  bltu           PASS     cycles=404     instret=352
+  bne            PASS     cycles=381     instret=327
+  fence_i        SKIP     documented exclusion
+  jal            PASS     cycles=119     instret=91
+  jalr           PASS     cycles=189     instret=151
+  lb             PASS     cycles=323     instret=289
+  lbu            PASS     cycles=323     instret=289
+  lh             PASS     cycles=339     instret=305
+  lhu            PASS     cycles=348     instret=314
+  lw             PASS     cycles=353     instret=319
+  ld_st          PASS     cycles=1169    instret=999
+  lui            PASS     cycles=127     instret=101
+  ma_data        SKIP     documented exclusion
+  or             PASS     cycles=565     instret=524
+  ori            PASS     cycles=273     instret=241
+  sb             PASS     cycles=536     instret=490
+  sh             PASS     cycles=589     instret=543
+  sw             PASS     cycles=596     instret=550
+  st_ld          PASS     cycles=545     instret=519
+  sll            PASS     cycles=570     instret=529
+  slli           PASS     cycles=309     instret=277
+  slt            PASS     cycles=536     instret=495
+  slti           PASS     cycles=305     instret=273
+  sltiu          PASS     cycles=305     instret=273
+  sltu           PASS     cycles=536     instret=495
+  sra            PASS     cycles=589     instret=548
+  srai           PASS     cycles=324     instret=292
+  srl            PASS     cycles=583     instret=542
+  srli           PASS     cycles=318     instret=286
+  sub            PASS     cycles=534     instret=493
+  xor            PASS     cycles=564     instret=523
+  xori           PASS     cycles=275     instret=243
+    riscv-tests: 40 passed, 0 failed, 2 skipped
+==> building e_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/e_core_sim
+==> C software tests (e_core, -march=rv32i_zicsr)
+  add_demo             [32mPASS[0m  cycles=4915      instret=3703      CPI=1.327
+  bubble_sort          [32mPASS[0m  cycles=12523     instret=10075     CPI=1.243
+  fib                  [32mPASS[0m  cycles=511036    instret=473764    CPI=1.079
+  hello                [32mPASS[0m  cycles=675       instret=487       CPI=1.386
+  memcpy_test          [32mPASS[0m  cycles=298242    instret=235936    CPI=1.264
+  perf_counters        [32mPASS[0m  cycles=14999     instret=11726     CPI=1.279
+    sw: 6 passed, 0 failed
+==> building e_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/e_core_sim
+==> randomised lockstep (e_core): 200 programs x 3 seeds x {0, random} waits
+  seed group 1 done (200 passed so far)
+  seed group 2 done (400 passed so far)
+  seed group 3 done (600 passed so far)
+    random: 600 passed, 0 failed
+==> mutation testing (e_core): 8 tests x 4 latency configs (0 2 random:7 0/d3) per mutation
+  no_fwd_rs1               [36mEQUIVALENT[0m survived as documented
+  no_fwd_rs2               [36mEQUIVALENT[0m survived as documented
+  no_regfile_bypass        [36mEQUIVALENT[0m survived as documented
+  no_fwd_no_bypass_all     [32mKILLED[0m    by  8 test(s), first: m2_basic@0
+  no_load_use_stall        [36mEQUIVALENT[0m survived as documented
+  no_stall_term            [36mEQUIVALENT[0m survived as documented
+  no_stall_no_bypass       [32mKILLED[0m    by  5 test(s), first: m2_basic@0
+  no_x0_write_mask         [36mEQUIVALENT[0m survived as documented
+  x0_reads_storage         [36mEQUIVALENT[0m survived as documented
+  x0_fully_writable        [32mKILLED[0m    by  7 test(s), first: m2_basic@0
+  fwd_ignores_x0           [32mKILLED[0m    by  2 test(s), first: hazard_raw@0
+  jalr_keeps_lsb           [32mKILLED[0m    by  1 test(s), first: jump_link@0
+  branch_always_taken      [32mKILLED[0m    by  3 test(s), first: m2_basic@0
+  branch_never_taken       [32mKILLED[0m    by  8 test(s), first: m2_basic@0
+  branch_target_no_jalr    [32mKILLED[0m    by  3 test(s), first: branch_hazard@0
+  no_wrongpath_discard     [32mKILLED[0m    by  3 test(s), first: m2_basic@2
+  redirect_keeps_ifid      [32mKILLED[0m    by  3 test(s), first: m2_basic@0
+  no_skid_buffer           [32mKILLED[0m    by  7 test(s), first: m2_basic@random:7
+  stall_ignores_ex_ready   [32mKILLED[0m    by  6 test(s), first: m2_basic@random:7
+  ex_ready_ignores_rvalid  [32mKILLED[0m    by  8 test(s), first: m2_basic@2
+  mem_gnt_not_cleared      [32mKILLED[0m    by  7 test(s), first: m2_basic@2
+  lsu_be_always_word       [32mKILLED[0m    by  1 test(s), first: mem_align@0
+  lsu_no_sign_extend       [32mKILLED[0m    by  1 test(s), first: mem_align@0
+
+    mutations: 16 killed, 7 equivalent (documented), 0 unexpected, 0 not evaluated
+==> building e_core_sim_cov
+   -> /home/gsmaa/BigLittleSOC/build/e_core_sim_cov
+==> coverage: replaying 179 programs
+================================================================
+scope           kind           hit   total       pct
+----------------------------------------------------------------
+rtl/common      line           139     139   100.00%
+rtl/common      toggle        4115    5062    81.29%
+rtl/e_core      line            38      38   100.00%
+rtl/e_core      toggle        7509    9086    82.64%
+----------------------------------------------------------------
+TOTAL           line+toggle   11801   14325    82.38%
+================================================================
+
+toggle shortfall by signal (worst first):
+  file:line                                   unhit     bits
+  rtl/e_core/e_core_top.sv:126                  166      256
+  rtl/common/csr_unit.sv:80                     116      128
+  rtl/common/csr_unit.sv:86                     112      512
+  rtl/common/csr_unit.sv:87                     111      512
+  rtl/common/csr_unit.sv:75                      96      128
+  rtl/e_core/e_core_top.sv:393                   91      128
+  rtl/e_core/e_core_top.sv:62                    91      128
+  rtl/e_core/e_core_if_stage.sv:82               85      128
+  rtl/e_core/e_core_if_stage.sv:76               80      128
+  rtl/e_core/e_core_if_stage.sv:71               78      128
+  rtl/e_core/e_core_top.sv:131                   78      192
+  rtl/e_core/e_core_if_stage.sv:72               76      128
+  rtl/common/csr_unit.sv:56                      58       64
+  rtl/common/csr_unit.sv:57                      58       64
+  rtl/common/csr_unit.sv:90                      58       64
+  TOTAL                                        2524    14148
+  E-Core gate passed.
+==> building p_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/p_core_sim
+==> directed assembly tests (p_core)
+  branch_basic                 [32mPASS[0m  cycles=222      instret=146     
+  branch_hazard                [32mPASS[0m  cycles=101      instret=67      
+  csr_basic                    [32mPASS[0m  cycles=244      instret=153     
+  csr_perf                     [32mPASS[0m  cycles=374      instret=269     
+  hazard_load_use              [32mPASS[0m  cycles=114      instret=82      
+  hazard_raw                   [32mPASS[0m  cycles=121      instret=89      
+  illegal_encodings            [32mPASS[0m  cycles=1236     instret=778     
+  irq_timer                    [32mPASS[0m  cycles=1047     instret=977     
+  jump_link                    [32mPASS[0m  cycles=123      instret=70      
+  m2_basic                     [32mPASS[0m  cycles=168      instret=106     
+  mem_align                    [32mPASS[0m  cycles=241      instret=170     
+  trap_exceptions              [32mPASS[0m  cycles=597      instret=387     
+  x0_writes                    [32mPASS[0m  cycles=120      instret=74      
+  branch_predict               [32mPASS[0m  cycles=1276     instret=1044    
+  fence_i                      [32mPASS[0m  cycles=179      instret=114     
+  forwarding                   [32mPASS[0m  cycles=208      instret=156     
+  irq_muldiv                   [32mPASS[0m  cycles=14592    instret=3591    
+  muldiv_basic                 [32mPASS[0m  cycles=1609     instret=336     
+  muldiv_hazard                [32mPASS[0m  cycles=463      instret=120     
+  p_perf                       [32mPASS[0m  cycles=348      instret=125     
+    asm: 20 passed, 0 failed
+==> building p_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/p_core_sim
+==> riscv-tests (p_core): rv32ui-p + rv32um-p
+  simple         PASS     cycles=113     instret=77
+  add            PASS     cycles=599     instret=501
+  addi           PASS     cycles=340     instret=278
+  and            PASS     cycles=617     instret=521
+  andi           PASS     cycles=296     instret=234
+  auipc          PASS     cycles=132     instret=94
+  beq            PASS     cycles=441     instret=327
+  bge            PASS     cycles=477     instret=345
+  bgeu           PASS     cycles=502     instret=370
+  blt            PASS     cycles=441     instret=327
+  bltu           PASS     cycles=466     instret=352
+  bne            PASS     cycles=445     instret=327
+  fence_i        PASS     cycles=388     instret=332
+  jal            PASS     cycles=133     instret=91
+  jalr           PASS     cycles=213     instret=151
+  lb             PASS     cycles=353     instret=289
+  lbu            PASS     cycles=353     instret=289
+  lh             PASS     cycles=369     instret=305
+  lhu            PASS     cycles=378     instret=314
+  lw             PASS     cycles=383     instret=319
+  ld_st          PASS     cycles=1133    instret=999
+  lui            PASS     cycles=139     instret=101
+  ma_data        SKIP     documented exclusion
+  or             PASS     cycles=622     instret=524
+  ori            PASS     cycles=303     instret=241
+  sb             PASS     cycles=590     instret=490
+  sh             PASS     cycles=641     instret=543
+  sw             PASS     cycles=652     instret=550
+  st_ld          PASS     cycles=557     instret=519
+  sll            PASS     cycles=621     instret=529
+  slli           PASS     cycles=339     instret=277
+  slt            PASS     cycles=593     instret=495
+  slti           PASS     cycles=335     instret=273
+  sltiu          PASS     cycles=335     instret=273
+  sltu           PASS     cycles=593     instret=495
+  sra            PASS     cycles=644     instret=548
+  srai           PASS     cycles=354     instret=292
+  srl            PASS     cycles=640     instret=542
+  srli           PASS     cycles=348     instret=286
+  sub            PASS     cycles=591     instret=493
+  xor            PASS     cycles=619     instret=523
+  xori           PASS     cycles=305     instret=243
+  div            PASS     cycles=458     instret=132
+  divu           PASS     cycles=459     instret=133
+  mul            PASS     cycles=746     instret=495
+  mulh           PASS     cycles=740     instret=495
+  mulhsu         PASS     cycles=740     instret=495
+  mulhu          PASS     cycles=740     instret=495
+  rem            PASS     cycles=458     instret=132
+  remu           PASS     cycles=458     instret=132
+    riscv-tests: 49 passed, 0 failed, 1 skipped
+==> building p_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/p_core_sim
+==> C software tests (p_core, -march=rv32im_zicsr_zifencei)
+  add_demo             [32mPASS[0m  cycles=3893      instret=2944      CPI=1.322
+  bubble_sort          [32mPASS[0m  cycles=7113      instret=5819      CPI=1.222
+  fib                  [32mPASS[0m  cycles=500623    instret=470300    CPI=1.064
+  hello                [32mPASS[0m  cycles=631       instret=487       CPI=1.296
+  memcpy_test          [32mPASS[0m  cycles=240549    instret=235936    CPI=1.020
+  perf_counters        [32mPASS[0m  cycles=7767      instret=5598      CPI=1.387
+    sw: 6 passed, 0 failed
+==> building p_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/p_core_sim
+==> randomised lockstep (p_core): 200 programs x 3 seeds x {0, random} waits
+  seed group 1 done (200 passed so far)
+  seed group 2 done (400 passed so far)
+  seed group 3 done (600 passed so far)
+    random: 600 passed, 0 failed
+==> mutation testing (p_core): 39 tests x 4 latency configs (0 2 random:7 0/d3) per mutation
+  no_fwd_ex_ex             [32mKILLED[0m    by 39 test(s), first: branch_basic@0
+  no_fwd_mem_ex_rs2        [32mKILLED[0m    by 25 test(s), first: branch_basic@random:7
+  fwd_ignores_x0           [32mKILLED[0m    by 14 test(s), first: branch_predict@0
+  no_operand_refresh       [32mKILLED[0m    by  8 test(s), first: fence_i@0/d3
+  late_fwd_allowed         [36mEQUIVALENT[0m survived as documented
+  late_fwd_and_no_repair   [32mKILLED[0m    by 13 test(s), first: forwarding@0
+  no_interlock             [32mKILLED[0m    by 33 test(s), first: branch_hazard@0
+  interlock_ignores_mem    [32mKILLED[0m    by 21 test(s), first: branch_hazard@2
+  csr_not_late_in_mem      [36mEQUIVALENT[0m survived as documented
+  csr_not_late_in_ex       [32mKILLED[0m    by 26 test(s), first: csr_basic@0
+  no_store_exemption       [32mKILLED[0m    by  1 test(s), first: p_perf@0
+  no_mem_mem_fwd           [32mKILLED[0m    by 13 test(s), first: forwarding@0
+  no_store_refresh         [32mKILLED[0m    by 14 test(s), first: forwarding@2
+  no_mispredict_flush      [32mKILLED[0m    by 39 test(s), first: branch_basic@0
+  wrongpath_enters_ex      [32mKILLED[0m    by 16 test(s), first: branch_basic@0
+  trap_keeps_ex            [32mKILLED[0m    by 23 test(s), first: fence_i@0
+  ex_overwritten           [32mKILLED[0m    by 35 test(s), first: branch_hazard@random:7
+  no_fence_i_refetch       [32mKILLED[0m    by  1 test(s), first: fence_i@0
+  trapped_insn_writes_rf   [32mKILLED[0m    by  2 test(s), first: irq_muldiv@0
+  fetch_ignores_prediction [32mKILLED[0m    by 16 test(s), first: branch_basic@0
+  no_wrongpath_discard     [32mKILLED[0m    by 39 test(s), first: branch_basic@2
+  predict_never_taken      [32mKILLED[0m    by  2 test(s), first: branch_predict@0
+  mispredict_always        [32mKILLED[0m    by  4 test(s), first: branch_predict@0
+  bht_never_trained        [32mKILLED[0m    by  2 test(s), first: branch_predict@0
+  btb_ignores_tag          [32mKILLED[0m    by  1 test(s), first: branch_predict@0
+  btb_no_invalidate        [32mKILLED[0m    by  1 test(s), first: fence_i@0
+  mul_no_unsigned_fix      [32mKILLED[0m    by  8 test(s), first: muldiv_basic@0
+  mulhsu_signed_b          [32mKILLED[0m    by  5 test(s), first: muldiv_basic@0
+  mul_result_not_held      [32mKILLED[0m    by  1 test(s), first: p_perf@random:7
+  div_no_zero_case         [32mKILLED[0m    by  5 test(s), first: muldiv_basic@0
+  div_quotient_sign        [32mKILLED[0m    by  4 test(s), first: muldiv_basic@0
+  div_not_killed           [32mKILLED[0m    by  1 test(s), first: irq_muldiv@0
+
+    mutations: 30 killed, 2 equivalent (documented), 0 unexpected, 0 not evaluated
+==> building p_core_sim_cov
+   -> /home/gsmaa/BigLittleSOC/build/p_core_sim_cov
+==> coverage: replaying 195 programs
+================================================================
+scope           kind           hit   total       pct
+----------------------------------------------------------------
+rtl/common      line           139     139   100.00%
+rtl/common      toggle        3317    4046    81.98%
+rtl/p_core      line            92      92   100.00%
+rtl/p_core      toggle       13921   16742    83.15%
+----------------------------------------------------------------
+TOTAL           line+toggle   17469   21019    83.11%
+================================================================
+
+toggle shortfall by signal (worst first):
+  file:line                                   unhit     bits
+  rtl/p_core/p_core_top.sv:148                  166      256
+  rtl/common/csr_unit.sv:80                     116      128
+  rtl/common/csr_unit.sv:75                      96      128
+  rtl/p_core/p_core_top.sv:504                   91      128
+  rtl/p_core/p_core_top.sv:64                    91      128
+  rtl/p_core/p_core_top.sv:89                    80      128
+  rtl/p_core/p_core_if_stage.sv:80               76      128
+  rtl/p_core/p_core_if_stage.sv:81               76      128
+  rtl/p_core/p_core_if_stage.sv:85               76      128
+  rtl/p_core/p_core_if_stage.sv:88               76      140
+  rtl/p_core/p_core_if_stage.sv:92               76      128
+  rtl/p_core/p_core_if_stage.sv:95               76      140
+  rtl/p_core/p_core_top.sv:128                   74      128
+  rtl/p_core/p_core_mul.sv:77                    64      128
+  rtl/p_core/p_core_bpu.sv:71                    63      128
+  TOTAL                                        3550    20788
+  P-Core gate passed.
+==> building cached_e_core_sim (0 P-core(s) + 1 E-core(s))
+   -> /home/gsmaa/BigLittleSOC/build/cached_e_core_sim
+==> directed assembly tests (e_core)
+  branch_basic                 [32mPASS[0m  cycles=199      instret=146     
+  branch_hazard                [32mPASS[0m  cycles=110      instret=67      
+  csr_basic                    [32mPASS[0m  cycles=225      instret=153     
+  csr_perf                     [32mPASS[0m  cycles=455      instret=269     
+  hazard_load_use              [32mPASS[0m  cycles=133      instret=82      
+  hazard_raw                   [32mPASS[0m  cycles=118      instret=89      
+  illegal_encodings            [32mPASS[0m  cycles=1749     instret=874     
+  irq_timer                    [32mPASS[0m  cycles=1456     instret=977     
+  jump_link                    [32mPASS[0m  cycles=107      instret=70      
+  m2_basic                     [32mPASS[0m  cycles=157      instret=106     
+  mem_align                    [32mPASS[0m  cycles=308      instret=170     
+  trap_exceptions              [32mPASS[0m  cycles=851      instret=437     
+  x0_writes                    [32mPASS[0m  cycles=116      instret=74      
+    asm: 13 passed, 0 failed
+==> cached_e_core_sim up to date
+==> riscv-tests (e_core): rv32ui-p
+  simple         PASS     cycles=105     instret=77
+  add            PASS     cycles=545     instret=501
+  addi           PASS     cycles=313     instret=278
+  and            PASS     cycles=565     instret=521
+  andi           PASS     cycles=269     instret=234
+  auipc          PASS     cycles=125     instret=94
+  beq            PASS     cycles=382     instret=327
+  bge            PASS     cycles=409     instret=345
+  bgeu           PASS     cycles=434     instret=370
+  blt            PASS     cycles=382     instret=327
+  bltu           PASS     cycles=407     instret=352
+  bne            PASS     cycles=384     instret=327
+  fence_i        SKIP     documented exclusion
+  jal            PASS     cycles=122     instret=91
+  jalr           PASS     cycles=192     instret=151
+  lb             PASS     cycles=329     instret=289
+  lbu            PASS     cycles=329     instret=289
+  lh             PASS     cycles=345     instret=305
+  lhu            PASS     cycles=354     instret=314
+  lw             PASS     cycles=359     instret=319
+  ld_st          PASS     cycles=1754    instret=999
+  lui            PASS     cycles=130     instret=101
+  ma_data        SKIP     documented exclusion
+  or             PASS     cycles=568     instret=524
+  ori            PASS     cycles=276     instret=241
+  sb             PASS     cycles=647     instret=490
+  sh             PASS     cycles=700     instret=543
+  sw             PASS     cycles=707     instret=550
+  st_ld          PASS     cycles=698     instret=519
+  sll            PASS     cycles=573     instret=529
+  slli           PASS     cycles=312     instret=277
+  slt            PASS     cycles=539     instret=495
+  slti           PASS     cycles=308     instret=273
+  sltiu          PASS     cycles=308     instret=273
+  sltu           PASS     cycles=539     instret=495
+  sra            PASS     cycles=592     instret=548
+  srai           PASS     cycles=327     instret=292
+  srl            PASS     cycles=586     instret=542
+  srli           PASS     cycles=321     instret=286
+  sub            PASS     cycles=537     instret=493
+  xor            PASS     cycles=567     instret=523
+  xori           PASS     cycles=278     instret=243
+    riscv-tests: 40 passed, 0 failed, 2 skipped
+==> cached_e_core_sim up to date
+==> C software tests (e_core, -march=rv32i_zicsr)
+  add_demo             [32mPASS[0m  cycles=6653      instret=3766      CPI=1.767
+  bubble_sort          [32mPASS[0m  cycles=15475     instret=10075     CPI=1.536
+  fib                  [32mPASS[0m  cycles=719585    instret=473764    CPI=1.519
+  hello                [32mPASS[0m  cycles=929       instret=487       CPI=1.908
+  memcpy_test          [32mPASS[0m  cycles=443267    instret=235936    CPI=1.879
+  perf_counters        [32mPASS[0m  cycles=18070     instret=11966     CPI=1.510
+    sw: 6 passed, 0 failed
+==> cached_e_core_sim up to date
+==> randomised lockstep (e_core): 200 programs x 3 seeds x {0, random} waits
+  seed group 1 done (200 passed so far)
+  seed group 2 done (400 passed so far)
+  seed group 3 done (600 passed so far)
+    random: 600 passed, 0 failed
+==> building cached_p_core_sim (1 P-core(s) + 0 E-core(s))
+   -> /home/gsmaa/BigLittleSOC/build/cached_p_core_sim
+==> directed assembly tests (p_core)
+  branch_basic                 [32mPASS[0m  cycles=225      instret=146     
+  branch_hazard                [32mPASS[0m  cycles=107      instret=67      
+  csr_basic                    [32mPASS[0m  cycles=247      instret=153     
+  csr_perf                     [32mPASS[0m  cycles=441      instret=269     
+  hazard_load_use              [32mPASS[0m  cycles=120      instret=82      
+  hazard_raw                   [32mPASS[0m  cycles=124      instret=89      
+  illegal_encodings            [32mPASS[0m  cycles=1239     instret=778     
+  irq_timer                    [32mPASS[0m  cycles=1084     instret=977     
+  jump_link                    [32mPASS[0m  cycles=126      instret=70      
+  m2_basic                     [32mPASS[0m  cycles=171      instret=106     
+  mem_align                    [32mPASS[0m  cycles=247      instret=170     
+  trap_exceptions              [32mPASS[0m  cycles=607      instret=387     
+  x0_writes                    [32mPASS[0m  cycles=126      instret=74      
+  branch_predict               [32mPASS[0m  cycles=1279     instret=1044    
+  fence_i                      SKIP (not applicable in this configuration)
+  forwarding                   [32mPASS[0m  cycles=220      instret=156     
+  irq_muldiv                   [32mPASS[0m  cycles=14794    instret=3639    
+  muldiv_basic                 [32mPASS[0m  cycles=1612     instret=336     
+  muldiv_hazard                [32mPASS[0m  cycles=466      instret=120     
+  p_perf                       [32mPASS[0m  cycles=348      instret=125     
+    asm: 19 passed, 0 failed
+==> cached_p_core_sim up to date
+==> riscv-tests (p_core): rv32ui-p + rv32um-p
+  simple         PASS     cycles=116     instret=77
+  add            PASS     cycles=602     instret=501
+  addi           PASS     cycles=343     instret=278
+  and            PASS     cycles=620     instret=521
+  andi           PASS     cycles=299     instret=234
+  auipc          PASS     cycles=135     instret=94
+  beq            PASS     cycles=444     instret=327
+  bge            PASS     cycles=480     instret=345
+  bgeu           PASS     cycles=505     instret=370
+  blt            PASS     cycles=444     instret=327
+  bltu           PASS     cycles=469     instret=352
+  bne            PASS     cycles=448     instret=327
+  fence_i        SKIP     documented exclusion
+  jal            PASS     cycles=136     instret=91
+  jalr           PASS     cycles=216     instret=151
+  lb             PASS     cycles=359     instret=289
+  lbu            PASS     cycles=359     instret=289
+  lh             PASS     cycles=375     instret=305
+  lhu            PASS     cycles=384     instret=314
+  lw             PASS     cycles=389     instret=319
+  ld_st          PASS     cycles=1139    instret=999
+  lui            PASS     cycles=142     instret=101
+  ma_data        SKIP     documented exclusion
+  or             PASS     cycles=625     instret=524
+  ori            PASS     cycles=306     instret=241
+  sb             PASS     cycles=596     instret=490
+  sh             PASS     cycles=647     instret=543
+  sw             PASS     cycles=661     instret=550
+  st_ld          PASS     cycles=563     instret=519
+  sll            PASS     cycles=624     instret=529
+  slli           PASS     cycles=342     instret=277
+  slt            PASS     cycles=596     instret=495
+  slti           PASS     cycles=338     instret=273
+  sltiu          PASS     cycles=338     instret=273
+  sltu           PASS     cycles=596     instret=495
+  sra            PASS     cycles=647     instret=548
+  srai           PASS     cycles=357     instret=292
+  srl            PASS     cycles=643     instret=542
+  srli           PASS     cycles=351     instret=286
+  sub            PASS     cycles=594     instret=493
+  xor            PASS     cycles=622     instret=523
+  xori           PASS     cycles=308     instret=243
+  div            PASS     cycles=461     instret=132
+  divu           PASS     cycles=462     instret=133
+  mul            PASS     cycles=749     instret=495
+  mulh           PASS     cycles=743     instret=495
+  mulhsu         PASS     cycles=743     instret=495
+  mulhu          PASS     cycles=743     instret=495
+  rem            PASS     cycles=461     instret=132
+  remu           PASS     cycles=461     instret=132
+    riscv-tests: 48 passed, 0 failed, 2 skipped
+==> cached_p_core_sim up to date
+==> C software tests (p_core, -march=rv32im_zicsr_zifencei)
+  add_demo             [32mPASS[0m  cycles=5207      instret=2953      CPI=1.763
+  bubble_sort          [32mPASS[0m  cycles=7887      instret=5819      CPI=1.355
+  fib                  [32mPASS[0m  cycles=501332    instret=470300    CPI=1.066
+  hello                [32mPASS[0m  cycles=879       instret=487       CPI=1.805
+  memcpy_test          [32mPASS[0m  cycles=240791    instret=235936    CPI=1.021
+  perf_counters        [32mPASS[0m  cycles=9046      instret=5598      CPI=1.616
+    sw: 6 passed, 0 failed
+==> cached_p_core_sim up to date
+==> randomised lockstep (p_core): 200 programs x 3 seeds x {0, random} waits
+  seed group 1 done (200 passed so far)
+  seed group 2 done (400 passed so far)
+  seed group 3 done (600 passed so far)
+    random: 600 passed, 0 failed
+==> building soc_2p2e_sim (2 P-core(s) + 2 E-core(s))
+   -> /home/gsmaa/BigLittleSOC/build/soc_2p2e_sim
+==> multi-core programs (2 P + 2 E)
+  mc_dirty_sharing           [32mPASS[0m  cycles=155494   loads checked=103086  RD=5809 RDX=1805 UPGR=132 WR=3090 WB=1544 UNC_RD=0 UNC_WR=0
+  mc_false_sharing           [32mPASS[0m  cycles=22129    loads checked=3797    RD=3610 RDX=8 UPGR=1795 WR=1804 WB=0 UNC_RD=0 UNC_WR=0
+  mc_hello                   [32mPASS[0m  cycles=3536     loads checked=2254    RD=38 RDX=7 UPGR=3 WR=28 WB=0 UNC_RD=209 UNC_WR=209
+  mc_lock                    [32mPASS[0m  cycles=19636    loads checked=15649   RD=2745 RDX=51 UPGR=440 WR=888 WB=0 UNC_RD=0 UNC_WR=0
+  mc_pingpong                [32mPASS[0m  cycles=21404    loads checked=13549   RD=3651 RDX=98 UPGR=604 WR=904 WB=0 UNC_RD=0 UNC_WR=0
+  mc_producer_consumer       [32mPASS[0m  cycles=28083    loads checked=17288   RD=2605 RDX=301 UPGR=878 WR=1716 WB=0 UNC_RD=0 UNC_WR=0
+  mc_stress_s1               [32mPASS[0m  cycles=170697   loads checked=47457   RD=5983 RDX=2595 UPGR=596 WR=3342 WB=819 UNC_RD=0 UNC_WR=0
+  mc_stress_s2               [32mPASS[0m  cycles=170062   loads checked=47275   RD=5885 RDX=2643 UPGR=634 WR=3215 WB=859 UNC_RD=0 UNC_WR=0
+  mc_stress_s3               [32mPASS[0m  cycles=170661   loads checked=47675   RD=5900 RDX=2602 UPGR=592 WR=3382 WB=835 UNC_RD=0 UNC_WR=0
+  mc_stress_s4               [32mPASS[0m  cycles=170128   loads checked=47283   RD=5942 RDX=2654 UPGR=593 WR=3283 WB=828 UNC_RD=0 UNC_WR=0
+    soc: 10 passed, 0 failed
+==> soc_2p2e_sim up to date
+==> multi-core programs (2 P + 2 E)
+  mc_dirty_sharing           [32mPASS[0m  cycles=155494   loads checked=103086  RD=5809 RDX=1805 UPGR=132 WR=3090 WB=1544 UNC_RD=0 UNC_WR=0
+  mc_false_sharing           [32mPASS[0m  cycles=22129    loads checked=3797    RD=3610 RDX=8 UPGR=1795 WR=1804 WB=0 UNC_RD=0 UNC_WR=0
+  mc_hello                   [32mPASS[0m  cycles=3536     loads checked=2254    RD=38 RDX=7 UPGR=3 WR=28 WB=0 UNC_RD=209 UNC_WR=209
+  mc_lock                    [32mPASS[0m  cycles=19636    loads checked=15649   RD=2745 RDX=51 UPGR=440 WR=888 WB=0 UNC_RD=0 UNC_WR=0
+  mc_pingpong                [32mPASS[0m  cycles=21404    loads checked=13549   RD=3651 RDX=98 UPGR=604 WR=904 WB=0 UNC_RD=0 UNC_WR=0
+  mc_producer_consumer       [32mPASS[0m  cycles=28083    loads checked=17288   RD=2605 RDX=301 UPGR=878 WR=1716 WB=0 UNC_RD=0 UNC_WR=0
+  mc_stress_s1               [32mPASS[0m  cycles=170697   loads checked=47457   RD=5983 RDX=2595 UPGR=596 WR=3342 WB=819 UNC_RD=0 UNC_WR=0
+  mc_stress_s2               [32mPASS[0m  cycles=170062   loads checked=47275   RD=5885 RDX=2643 UPGR=634 WR=3215 WB=859 UNC_RD=0 UNC_WR=0
+  mc_stress_s3               [32mPASS[0m  cycles=170661   loads checked=47675   RD=5900 RDX=2602 UPGR=592 WR=3382 WB=835 UNC_RD=0 UNC_WR=0
+  mc_stress_s4               [32mPASS[0m  cycles=170128   loads checked=47283   RD=5942 RDX=2654 UPGR=593 WR=3283 WB=828 UNC_RD=0 UNC_WR=0
+    soc: 10 passed, 0 failed
+==> coherence mutation testing (15 mutations)
+  snoop_inv_keeps_S            kill  KILLED by unit/small: [FAIL] COPY: cycle 57 cache 1 holds stale S copy of 000101c0
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2688: hart 1's cache holds a stale S copy of 00010000: word 4 is
+  snoop_rd_keeps_M             kill  KILLED by unit/small: [FAIL] SWMR: cycle 66 line 00010220 has 1 M and 1 S copies
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2693: line 00010000 has 1 M and 1 S copies (SWMR broken)
+  snoop_inv_leaves_S           kill  KILLED by unit/small: [FAIL] COPY: cycle 57 cache 1 holds stale S copy of 000101c0
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2688: hart 1's cache holds a stale S copy of 00010000: word 4 is
+  core_ignores_snoop_cycle     kill  KILLED by unit/small: [0] %Error: l1_dcache.sv:555: Assertion failed in TOP.coherent_mem.g_l1[1].u_l1: l1_dcache: snoop an
+                                     KILLED by mc_pingpong@0: [0] %Error: l1_dcache.sv:555: Assertion failed in TOP.soc_top.u_mem.g_l1[0].u_l1: l1_dcache: snoop a
+  store_hit_on_S               kill  KILLED by unit/small: [FAIL] COPY: cycle 174 cache 0 holds stale S copy of 000102e0
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2724: hart 1's cache holds a stale S copy of 00010020: word 2 is
+  upgrade_ignores_lost_copy    kill  KILLED by unit/small: [FAIL] COPY: cycle 297 cache 0 holds stale M copy of 000102c0
+                                     KILLED by mc_pingpong@0: [0] %Error: snoop_bus.sv:308: Assertion failed in TOP.soc_top.u_mem.u_bus: snoop_bus: BUS_UPGR found
+  writeback_not_rechecked      kill  KILLED by unit/small: [FAIL] MEMORY: cycle 195 line 00010260 is stale in memory with no M copy
+                                     KILLED by mc_stress_s3@0: soc_sim: COHERENCE VIOLATION: cycle 104707: hart 1's cache holds a stale M copy of 00012060: word 3 
+  wt_store_skips_own_copy      kill  KILLED by unit/small: [FAIL] COPY: cycle 202 cache 3 holds stale S copy of 00010220
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2790: hart 2's cache holds a stale S copy of 00010020: word 2 is
+  uncached_error_dropped       kill  KILLED by unit/small: [FAIL] error response mismatch at 281564 port 1
+                                     KILLED by cached:trap_exceptions@0: soc_sim: PROGRAM FAILED on hart 0, tohost=25 (raw 0x00000033)
+  upgrade_not_snooped          kill  KILLED by unit/small: [FAIL] COPY: cycle 184 cache 0 holds stale S copy of 000102e0
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2732: hart 1's cache holds a stale S copy of 00010020: word 2 is
+  rd_flush_not_written         kill  KILLED by unit/small: [FAIL] MEMORY: cycle 66 line 00010220 is stale in memory with no M copy
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 2693: hart 2 (E-core) loaded 00000000 from 00010010; the coheren
+  rdx_ignores_owner            kill  KILLED by unit/small: [FAIL] COPY: cycle 336 cache 1 holds stale M copy of 00010100
+                                     KILLED by mc_pingpong@0: soc_sim: COHERENCE VIOLATION: cycle 19912: hart 0's cache holds a stale M copy of 00010280: word 2 i
+  wr_flush_not_merged          kill  KILLED by unit/small: [FAIL] MEMORY: cycle 168 line 00010080 is stale in memory with no M copy
+                                     KILLED by mc_lock@0: soc_sim: COHERENCE VIOLATION: cycle 170: line 00010020 is stale in memory (word 4 00000000, should b
+  victim_ignores_invalid_way   perf  KILLED by unit/full: [FAIL] fill used the invalid way, not the LRU one: cache 0 holds 00012020 in I, expected S
+                                     (not run: performance only)
+  lru_never_updated            perf  KILLED by unit/full: [FAIL] P0 miss on a full set: write back the LRU modified way, then fill: bus transactions differ
+                                     (not run: performance only)
+    coherence mutation: all detected
+  SoC gate passed.
+==> building e_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/e_core_sim
+==> bench (e_core): all C programs passed
+==> building p_core_sim
+   -> /home/gsmaa/BigLittleSOC/build/p_core_sim
+==> bench (p_core): all C programs passed
+
+## E-core vs P-core: C programs, whole-program cycles, zero wait states
+
+| Program | E-core cycles | E-core instret | E-core CPI | P-core cycles | P-core instret | P-core CPI | Speed-up |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| add_demo | 4915 | 3703 | 1.327 | 3893 | 2944 | 1.322 | 1.26x |
+| bubble_sort | 12523 | 10075 | 1.243 | 7113 | 5819 | 1.222 | 1.76x |
+| fib | 511036 | 473764 | 1.079 | 500623 | 470300 | 1.064 | 1.02x |
+| hello | 675 | 487 | 1.386 | 631 | 487 | 1.296 | 1.07x |
+| memcpy_test | 298242 | 235936 | 1.264 | 240549 | 235936 | 1.020 | 1.24x |
+| perf_counters | 14999 | 11726 | 1.279 | 7767 | 5598 | 1.387 | 1.93x |
+| **total** | **842390** | **735691** | **1.145** | **760576** | **721084** | **1.055** | **1.11x** |
+
+Speed-up = E-core cycles / P-core cycles (above 1.00x: the P-core is faster).
+
+================================================
+  All E-Core, P-Core and SoC regressions passed.
+================================================
+
+real	25m16.569s
+user	43m14.464s
+sys	6m20.223s
+EXIT 0

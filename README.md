@@ -1,19 +1,41 @@
-# RISC-V SoC — E-Core and P-Core
+# RISC-V SoC — E-Core, P-Core and the coherent big.LITTLE SoC
 
 The two CPU cores of the big.LITTLE / UMA SoC described in
-`RISC-V_SoC_Project_Plan.md`, written in SystemVerilog-2012 and verified with
-Verilator: Phases 0–2. Caches, interconnect and accelerator are **not** part of
-this tree yet.
+`RISC-V_SoC_Project_Plan.md`, and the SoC built from them, written in
+SystemVerilog-2012 and verified with Verilator: Phases 0–2, the cache
+hierarchy with MSI coherence, and the QoS system interconnect. Task migration
+and power management come next.
 
 * **E-core** — 3-stage, RV32I_Zicsr, static not-taken, small.
 * **P-core** — 5-stage, RV32IM_Zicsr_Zifencei, BHT + BTB branch prediction,
   Booth multiplier and restoring divider.
+* **SoC** — 2 P-cores + 2 E-cores, each with private L1 instruction and data
+  caches (P: 16 KB 2-way, write-back MSI; E: 8 KB direct-mapped,
+  write-through), kept coherent by MSI snooping, a shared inclusive 64 KB L2
+  with a snoop filter, and a QoS crossbar to an RTL SRAM, UART, interrupt
+  controller and system-control block. See
+  [`docs/memory_system.md`](docs/memory_system.md).
 
-Both have identical external interfaces (two valid/ready memory ports, three
-interrupt pins, RVFI), share the ALU, register file, immediate generator, LSU,
-decoder, CSR file and trap unit, and run under the same testbench and golden
-ISS. `CORE=e_core` (default) or `CORE=p_core` selects the core for any
-per-core target.
+Both cores have identical external interfaces (two valid/ready memory ports,
+three interrupt pins, RVFI), share the ALU, register file, immediate generator,
+LSU, decoder, CSR file and trap unit, and run under the same testbench and
+golden ISS. `CORE=e_core` (default) or `CORE=p_core` selects the core for any
+per-core target; `CACHED=1` runs that core behind the whole memory system.
+
+## The SoC at a glance
+
+| Property | Value |
+|---|---|
+| Harts | 0–1 P-cores, 2–3 E-cores (`mhartid`), one image for all |
+| P-core L1I / L1D | 16 KB, 2-way, 32 B lines, LRU; L1D write-back / write-allocate, MSI |
+| E-core L1I / L1D | 8 KB, direct-mapped, 32 B lines; L1D write-through / no-write-allocate |
+| Instruction fetch | coherent with every core's stores (`FENCE.I` works behind the caches) |
+| L2 | 64 KB, 4-way, pseudo-LRU, write-back, inclusive; a sharer bit per L1 per line is the snoop filter; back-invalidation on eviction |
+| Coherence | MSI on an atomic snooping bus: BusRd, BusRdX (cache-to-cache), BusUpgr, write-through, writeback |
+| Interconnect | 4 × 4 crossbar, simplified AXI4-Lite, strict priority + round-robin + anti-starvation (16 cycles), QoS registers |
+| Slaves | SRAM 192 KB (1-cycle), UART, per-hart interrupt controller, system control (QoS, performance counters) |
+| Memory model | sequentially consistent (each access performed at acknowledgement) |
+| Verification | 111M unit checks; every load checked against the coherent value in every SoC run; 32/32 mutations killed |
 
 ## P-core at a glance
 
@@ -46,6 +68,17 @@ Full details: [`docs/p_core_microarchitecture.md`](docs/p_core_microarchitecture
 Full details: [`docs/e_core_microarchitecture.md`](docs/e_core_microarchitecture.md).
 
 ## Status
+
+### SoC
+
+| Gate | Result |
+|---|---|
+| Unit: coherence (`tb_coherent_mem`, `_small`, `_wb4`) | every MSI transition, both waiting-request races, L2 inclusion and back-invalidation, snoop filter, instruction-cache coherence; random traffic on all 8 ports; ~108M checks |
+| Unit: interconnect (`tb_qos_xbar`) | every grant against a reference arbiter (priority, round-robin, anti-starvation, no dead cycles), routing, data, decode errors; 3.5M checks |
+| Each core behind the whole system (`make cached-tests`) | directed (incl. `fence_i`), `riscv-tests`, C programs, 600 × 2 random lockstep: all pass, same as the bare cores |
+| Multi-core programs (`make soc-tests`) | 13 programs × 6 settings (5 SRAM latencies + checked background traffic) |
+| Mutation (`make soc-mutation`) | 32 / 32 killed: caches, coherence, L2, interconnect, peripherals |
+
 
 ### P-core
 
@@ -134,6 +167,21 @@ RANDOM_NPROG=20 RANDOM_NSEED=1 make random
 make CORE=p_core asm-tests riscv-tests sw-tests
 ```
 
+## SoC targets
+
+```sh
+make soc            # build the 2P+2E SoC simulator (build/soc_2p2e_sim)
+make soc-tests      # multi-core programs on it
+make cached-tests   # every core suite again, behind the whole memory system
+make soc-mutation   # mutation testing of caches, coherence, interconnect, peripherals
+make soc-test       # all three: the SoC's gate (part of `make test`)
+```
+
+`build/soc_2p2e_sim --elf=PROG.elf --stats` runs any multi-core program and
+prints per-cache hit/miss counts, L2 and bus statistics and interconnect
+contention; `--waits=random:SEED` slows the SRAM, `--traffic=PCT` adds checked
+background traffic on the interconnect.
+
 ## Individual targets
 
 | Target | What it does |
@@ -160,11 +208,20 @@ make CORE=p_core asm-tests riscv-tests sw-tests
 rtl/common/     ALU, regfile, immediate generator, decoder, CSR unit, LSU, shared package
 rtl/e_core/     E-core pipeline stages, hazard unit, trap unit, top level
 rtl/p_core/     P-core pipeline stages, predictor, multiplier, divider, hazard unit, top
-tb/unit/        one C++ Verilator harness per common/ module (p_core/: per P-core module)
+rtl/cache/      L1 cache (write-back MSI / write-through / instruction), L2 arrays, package
+rtl/coherence/  snooping bus + L2 controller; L1s + bus + L2 as one coherent memory system
+rtl/interconnect/ QoS crossbar
+rtl/periph/     SRAM controller, UART, interrupt controller, system control
+rtl/soc/        the 2P+2E big.LITTLE SoC top level
+tb/unit/        one C++ Verilator harness per common/ module (p_core/: per P-core
+                module; coherence/: the coherent memory system; interconnect/:
+                the crossbar)
 tb/integration/ core harness, memory model, ELF loader, golden ISS
+tb/soc/         SoC harness: program loader, coherence checker, traffic masters
 tb/asm/         hand-written self-checking assembly tests (p_core/: P-core only)
-sw/common/      startup code, linker scripts, UART driver
+sw/common/      startup code (start_mc.S: multi-core), linker scripts, UART driver
 sw/tests/       C benchmark programs
+sw/soc_tests/   multi-core C programs for the SoC
 scripts/        build and regression drivers
 syn/            Yosys synthesis script
 docs/           microarchitecture, verification plan, results, lab notebook
@@ -180,6 +237,7 @@ and verification.
 - [`docs/e_core_microarchitecture.md`](docs/e_core_microarchitecture.md) — datapath, hazard and stall tables, trap priority, CSR map, design justifications
 - [`docs/e_core_verification_plan.md`](docs/e_core_verification_plan.md) — test matrix, coverage numbers, known limitations
 - [`docs/e_core_results.md`](docs/e_core_results.md) — compliance pass table, CPI, stall breakdown, area estimate
+- [`docs/memory_system.md`](docs/memory_system.md) — caches, MSI coherence, L2 and snoop filter, QoS interconnect, peripherals: design, verification, mutation table and results
 - [`docs/lab_notebook.md`](docs/lab_notebook.md) — design decisions and debugging log, one entry per session, with the root cause of every bug found
 
 ## Notable design decisions
