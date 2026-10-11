@@ -95,7 +95,7 @@ soc_rtl_files() {
   for f in "$rtl"/cache/*.sv; do
     [ "$f" = "$rtl/cache/cache_pkg.sv" ] || echo "$f"
   done
-  for f in "$rtl"/coherence/*.sv "$rtl"/interconnect/*.sv "$rtl"/periph/*.sv \
+  for f in "$rtl"/coherence/*.sv "$rtl"/interconnect/*.sv "$rtl"/periph/*.sv "$rtl"/power/*.sv \
            "$rtl"/soc/*.sv; do echo "$f"; done
 }
 

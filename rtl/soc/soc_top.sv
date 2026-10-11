@@ -5,11 +5,16 @@
 // L1 instruction and data caches, kept coherent by MSI snooping on one bus,
 // with a shared, inclusive 64 KB L2 behind it (rtl/coherence/coherent_mem.sv).
 //
-//   hart 0 .. NUM_P-1    P-cores (RV32IM, 5-stage) + 16 KB 2-way L1D (WB) + L1I
-//   hart NUM_P .. N-1    E-cores (RV32I,  3-stage) +  8 KB direct L1D (WT) + L1I
+//   core 0 .. NUM_P-1    P-cores (RV32IM, 5-stage) + 16 KB 2-way L1D (WB) + L1I
+//   core NUM_P .. N-1    E-cores (RV32I,  3-stage) +  8 KB direct L1D (WT) + L1I
 //
-// Every core reads its hart number from mhartid, so one program image runs on
-// all of them and each hart picks its own work.
+// Software runs as N contexts (harts). A hart reads its number from mhartid,
+// so one program image runs on all of them and each hart picks its own work.
+// At reset core c runs hart c; the PMU (rtl/power/pmu.sv) can migrate a hart
+// to another core, put it to sleep, slow a cluster's clock, and switch a
+// cluster's power domain off. It drives each core's hart number, halt and
+// debug ports, routes each hart's interrupts to the core running it, and
+// gates each core's clock and its L1s' clock.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS OUTSIDE
@@ -23,16 +28,19 @@
 //   2  traffic port A   (testbench) 2  interrupt control   0x1100_0000
 //   3  traffic port B   (testbench) 3  system control      0x1200_0000
 //                                      (QoS registers, performance counters)
+//                                   4  PMU: power          0x4000_0000
+//                                   5  PMU: migration      0x5000_0000
 //
 // Masters 1-3 are brought out: the testbench loads programs through the
 // debug port while the CPUs are held in reset (cpu_rst_ni), and drives the
 // traffic ports as stand-ins for the plan's DMA and accelerator masters
 // (QoS defaults: CPU 2, debug 0, A 1, B 3, as in plan §3.1).
 //
-// The core-side data ports are also brought out as a read-only monitor
+// Each core's data accesses are also brought out as the L1s perform them
 // (dmon_*): they are what the coherence checker in the testbench watches.
-// The RVFI trace of every core and the coherence system's debug probe and
-// event counters are brought out for the same reason.
+// The RVFI trace of every core (valid only in cycles core_en_o is high: each
+// core's clock is gated), the coherence system's debug probe and event
+// counters are brought out for the same reason.
 // ============================================================================
 
 module soc_top
@@ -66,16 +74,19 @@ module soc_top
   output logic                         uart_tx_valid_o,
   output logic [7:0]                   uart_tx_byte_o,
 
-  // ---- Core data port monitor (read-only copies) ----
-  output logic [N-1:0]                 dmon_req_o,
+  // ---- Data accesses, as performed by each core's L1 ----
+  output logic [N-1:0]                 dmon_valid_o,
   output logic [N-1:0][31:0]           dmon_addr_o,
   output logic [N-1:0]                 dmon_we_o,
   output logic [N-1:0][3:0]            dmon_be_o,
   output logic [N-1:0][31:0]           dmon_wdata_o,
-  output logic [N-1:0]                 dmon_gnt_o,
-  output logic [N-1:0]                 dmon_rvalid_o,
   output logic [N-1:0][31:0]           dmon_rdata_o,
   output logic [N-1:0]                 dmon_err_o,
+
+  // ---- Power and migration state ----
+  output logic [N-1:0]                 core_en_o,    // core's clock edge ends this cycle
+  output logic [N-1:0][31:0]           hart_id_o,    // hart each core runs
+  output logic                         mig_busy_o,
 
   // ---- Coherence debug probe, statistics, bus monitor ----
   input  logic [31:0]                  dbg_addr_i,
@@ -125,12 +136,31 @@ module soc_top
 );
 
   localparam int unsigned NM = 4;
-  localparam int unsigned NS = 4;
+  localparam int unsigned NS = 6;
 
   logic cpu_rst_n;
   assign cpu_rst_n = rst_ni & cpu_rst_ni;
 
+  // Interrupts per hart (from the controller) and per core (from the PMU)
+  logic [N-1:0] hirq_timer, hirq_software, hirq_external;
   logic [N-1:0] irq_timer, irq_software, irq_external;
+
+  // PMU <-> cores and caches
+  logic [N-1:0]       core_clk_en, l1_clk_en, l1_flush, l1_flush_done, core_clk;
+  logic [N-1:0]       halt_req, halted, retire;
+  logic [N-1:0][31:0] hart_id;
+  logic [4:0]         dbg_rf_addr;
+  logic [11:0]        dbg_csr_addr;
+  logic [31:0]        dbg_wdata;
+  logic [N-1:0]       dbg_rf_we, dbg_csr_we, dbg_pc_we;
+  logic [N-1:0][31:0] dbg_rf_rdata, dbg_csr_rdata, dbg_pc;
+
+  assign core_en_o = core_clk_en;
+  assign hart_id_o = hart_id;
+
+  for (genvar c = 0; c < int'(N); c++) begin : g_core_clk
+    clock_gate u_cg (.clk_i(clk_i), .en_i(core_clk_en[c]), .clk_o(core_clk[c]));
+  end
 
   // Core <-> L1 instruction ports
   logic [N-1:0]       i_req, i_gnt, i_rvalid, i_err;
@@ -141,21 +171,41 @@ module soc_top
   logic [N-1:0][31:0] d_addr, d_wdata, d_rdata;
   logic [N-1:0][3:0]  d_be;
 
-  assign dmon_req_o    = d_req;
-  assign dmon_addr_o   = d_addr;
-  assign dmon_we_o     = d_we;
-  assign dmon_be_o     = d_be;
-  assign dmon_wdata_o  = d_wdata;
-  assign dmon_gnt_o    = d_gnt;
-  assign dmon_rvalid_o = d_rvalid;
-  assign dmon_rdata_o  = d_rdata;
-  assign dmon_err_o    = d_err;
+  // Performed-access monitors of every L1; the data caches' come out.
+  logic [NL1-1:0]       pf_valid, pf_we, pf_err;
+  logic [NL1-1:0][31:0] pf_addr, pf_wdata, pf_rdata;
+  logic [NL1-1:0][3:0]  pf_be;
+  for (genvar c = 0; c < int'(N); c++) begin : g_dmon
+    assign dmon_valid_o[c] = pf_valid[c];
+    assign dmon_addr_o[c]  = pf_addr[c];
+    assign dmon_we_o[c]    = pf_we[c];
+    assign dmon_be_o[c]    = pf_be[c];
+    assign dmon_wdata_o[c] = pf_wdata[c];
+    assign dmon_rdata_o[c] = pf_rdata[c];
+    assign dmon_err_o[c]   = pf_err[c];
+  end
+  logic unused_ipf;
+  assign unused_ipf = ^{pf_valid[NL1-1:N], pf_we[NL1-1:N], pf_err[NL1-1:N], pf_addr[NL1-1:N],
+                        pf_wdata[NL1-1:N], pf_rdata[NL1-1:N], pf_be[NL1-1:N]};
 
   // Every port of a core except its identity; both core types have the same
   // interface, which is the point.
   `define SOC_CORE_PORTS(i)                                        \
-      .clk_i            (clk_i),                                   \
+      .clk_i            (core_clk[i]),                             \
       .rst_ni           (cpu_rst_n),                               \
+      .hart_id_i        (hart_id[i]),                              \
+      .halt_req_i       (halt_req[i]),                             \
+      .halted_o         (halted[i]),                               \
+      .retire_o         (retire[i]),                               \
+      .dbg_rf_addr_i    (dbg_rf_addr),                             \
+      .dbg_rf_we_i      (dbg_rf_we[i]),                            \
+      .dbg_rf_rdata_o   (dbg_rf_rdata[i]),                         \
+      .dbg_csr_addr_i   (dbg_csr_addr),                            \
+      .dbg_csr_we_i     (dbg_csr_we[i]),                           \
+      .dbg_csr_rdata_o  (dbg_csr_rdata[i]),                        \
+      .dbg_pc_o         (dbg_pc[i]),                               \
+      .dbg_pc_we_i      (dbg_pc_we[i]),                            \
+      .dbg_wdata_i      (dbg_wdata),                               \
       .instr_req_o      (i_req[i]),                                \
       .instr_addr_o     (i_addr[i]),                               \
       .instr_gnt_i      (i_gnt[i]),                                \
@@ -198,8 +248,7 @@ module soc_top
 
   for (genvar i = 0; i < int'(NUM_P); i++) begin : g_p
     p_core_top #(
-      .HART_ID (32'(i)),
-      .RVFI    (RVFI)
+      .RVFI (RVFI)
     ) u_core (
       `SOC_CORE_PORTS(i)
     );
@@ -207,8 +256,7 @@ module soc_top
 
   for (genvar j = 0; j < int'(NUM_E); j++) begin : g_e
     e_core_top #(
-      .HART_ID (32'(NUM_P + j)),
-      .RVFI    (RVFI)
+      .RVFI (RVFI)
     ) u_core (
       `SOC_CORE_PORTS(NUM_P + j)
     );
@@ -228,6 +276,10 @@ module soc_top
   ) u_mem (
     .clk_i          (clk_i),
     .rst_ni         (cpu_rst_n),
+    .core_en_i      (core_clk_en),
+    .l1_clk_en_i    (l1_clk_en),
+    .flush_i        (l1_flush),
+    .flush_done_o   (l1_flush_done),
     .core_req_i     (d_req),
     .core_addr_i    (d_addr),
     .core_we_i      (d_we),
@@ -259,6 +311,13 @@ module soc_top
     .dbg_l2_dirty_o   (dbg_l2_dirty_o),
     .dbg_l2_sharers_o (dbg_l2_sharers_o),
     .dbg_l2_data_o    (dbg_l2_data_o),
+    .perf_valid_o   (pf_valid),
+    .perf_addr_o    (pf_addr),
+    .perf_we_o      (pf_we),
+    .perf_be_o      (pf_be),
+    .perf_wdata_o   (pf_wdata),
+    .perf_rdata_o   (pf_rdata),
+    .perf_err_o     (pf_err),
     .events_o       (events_o),
     .l2_events_o    (l2_events_o),
     .mon_done_o     (mon_done_o),
@@ -323,8 +382,10 @@ module soc_top
   qos_xbar #(
     .NM        (NM),
     .NS        (NS),
-    .SLV_BASE  ({32'h1200_0000, 32'h1100_0000, 32'h1000_0000, 32'h0000_0000}),
-    .SLV_LIMIT ({32'h1200_1000, 32'h1101_0000, 32'h1000_0100, 32'h0003_0000})
+    .SLV_BASE  ({32'h5000_0000, 32'h4000_0000, 32'h1200_0000, 32'h1100_0000,
+                 32'h1000_0000, 32'h0000_0000}),
+    .SLV_LIMIT ({32'h5000_1000, 32'h4000_1000, 32'h1200_1000, 32'h1101_0000,
+                 32'h1000_0100, 32'h0003_0000})
   ) u_xbar (
     .clk_i          (clk_i),
     .rst_ni         (rst_ni),
@@ -384,9 +445,9 @@ module soc_top
 
   irq_ctrl #(.NH(N)) u_irq (
     `SOC_SLAVE_PORTS(2),
-    .irq_timer_o    (irq_timer),
-    .irq_software_o (irq_software),
-    .irq_external_o (irq_external)
+    .irq_timer_o    (hirq_timer),
+    .irq_software_o (hirq_software),
+    .irq_external_o (hirq_external)
   );
 
   sysctl #(
@@ -407,6 +468,60 @@ module soc_top
   );
 
   `undef SOC_SLAVE_PORTS
+
+  // ====================================================================
+  // Power management and task migration: slaves 4 (power) and 5
+  // (migration). Reset with the CPUs, like everything they control.
+  // ====================================================================
+  pmu #(
+    .NUM_P (NUM_P),
+    .NUM_E (NUM_E)
+  ) u_pmu (
+    .clk_i              (clk_i),
+    .rst_ni             (cpu_rst_n),
+    .p_req_valid_i      (s_req_valid[4]),
+    .p_req_ready_o      (s_req_ready[4]),
+    .p_req_addr_i       (s_req_addr[4]),
+    .p_req_write_i      (s_req_write[4]),
+    .p_req_wdata_i      (s_req_wdata[4]),
+    .p_req_wstrb_i      (s_req_wstrb[4]),
+    .p_rsp_valid_o      (s_rsp_valid[4]),
+    .p_rsp_rdata_o      (s_rsp_rdata[4]),
+    .p_rsp_err_o        (s_rsp_err[4]),
+    .m_req_valid_i      (s_req_valid[5]),
+    .m_req_ready_o      (s_req_ready[5]),
+    .m_req_addr_i       (s_req_addr[5]),
+    .m_req_write_i      (s_req_write[5]),
+    .m_req_wdata_i      (s_req_wdata[5]),
+    .m_req_wstrb_i      (s_req_wstrb[5]),
+    .m_rsp_valid_o      (s_rsp_valid[5]),
+    .m_rsp_rdata_o      (s_rsp_rdata[5]),
+    .m_rsp_err_o        (s_rsp_err[5]),
+    .halt_req_o         (halt_req),
+    .halted_i           (halted),
+    .retire_i           (retire),
+    .hart_id_o          (hart_id),
+    .dbg_rf_addr_o      (dbg_rf_addr),
+    .dbg_csr_addr_o     (dbg_csr_addr),
+    .dbg_wdata_o        (dbg_wdata),
+    .dbg_rf_we_o        (dbg_rf_we),
+    .dbg_csr_we_o       (dbg_csr_we),
+    .dbg_pc_we_o        (dbg_pc_we),
+    .dbg_rf_rdata_i     (dbg_rf_rdata),
+    .dbg_csr_rdata_i    (dbg_csr_rdata),
+    .dbg_pc_i           (dbg_pc),
+    .core_clk_en_o      (core_clk_en),
+    .l1_clk_en_o        (l1_clk_en),
+    .l1_flush_o         (l1_flush),
+    .l1_flush_done_i    (l1_flush_done),
+    .ctx_irq_timer_i    (hirq_timer),
+    .ctx_irq_software_i (hirq_software),
+    .ctx_irq_external_i (hirq_external),
+    .irq_timer_o        (irq_timer),
+    .irq_software_o     (irq_software),
+    .irq_external_o     (irq_external),
+    .mig_busy_o         (mig_busy_o)
+  );
 
   // The interconnect routes by address; whether an access was cacheable is
   // implied by where it goes.

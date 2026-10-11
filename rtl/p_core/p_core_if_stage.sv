@@ -64,6 +64,10 @@ module p_core_if_stage
   input  logic        redirect_i,
   input  logic [31:0] redirect_pc_i,
 
+  // ---- halt: issue no new fetch; idle once nothing is in flight ----
+  input  logic        hold_i,
+  output logic        idle_o,
+
   // ---- IF/ID pipeline register ----
   input  logic        ifid_accept_i,   // ID consumes the contents this cycle
   output logic        ifid_valid_o,
@@ -95,6 +99,7 @@ module p_core_if_stage
   pred_t       skid_pred_q,  skid_pred_d;
 
   assign instr_req_o    = fetch_active_q & ~fetch_gnt_q;
+  assign idle_o         = ~fetch_active_q;
   assign instr_addr_o   = fetch_addr_q;
   assign bp_lookup_pc_o = fetch_addr_q;
 
@@ -187,7 +192,7 @@ module p_core_if_stage
     // ---- 5. issue the next fetch ----------------------------------------
     // One request in flight at most, and only when the skid buffer is free,
     // so a response always has somewhere to land.
-    if (!fetch_active_d && !skid_valid_d) begin
+    if (!fetch_active_d && !skid_valid_d && !hold_i) begin
       fetch_active_d = 1'b1;
       fetch_gnt_d    = 1'b0;
       fetch_addr_d   = pc_d;

@@ -1,5 +1,5 @@
 // UNIT-TOP: coherent_mem
-// UNIT-RTL: rtl/cache/cache_pkg.sv rtl/cache/l1_dcache.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
+// UNIT-RTL: rtl/power/clock_gate.sv rtl/cache/cache_pkg.sv rtl/cache/l1_dcache.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
 // ============================================================================
 // tb_coherent_mem.cpp — the cache hierarchy, full-size geometry.
 //
@@ -435,6 +435,51 @@ void IcacheCoherence() {
   tb::Group("instruction caches: coherent with every core's stores (FENCE.I-safe)");
 }
 
+// Power management: a flush writes back what its caches own and leaves them
+// empty; the other cores then read the data from the L2.
+void FlushCaches() {
+  Harness h(45);
+  const uint32_t A = 0x00011000u, B = A + 0x40, C = A + 0x80;
+  h.Store(P0, A, 0x0A0A0A0Au);      // M in P0
+  h.Store(P0, B, 0x0B0B0B0Bu);      // M in P0
+  h.Load(P0, C);                    // S in P0
+  h.Load(IP0, C + 4);               // S in P0's instruction cache
+  h.TakeBus();
+  h.Flush(P0);
+  ExpectBus(h, {{P0, WB, A, false, false}, {P0, WB, B, false, false}},
+            "flush writes back exactly the modified lines");
+  for (uint32_t x : {A, B, C}) ExpectStates(h, x, {I, I, I, I}, "after P0's flush");
+  tb::CheckEq<int>("instruction cache flushed too", h.StateOf(IP0, C), I);
+  tb::Check(h.L2Of(A).dirty && h.L2Of(A).sharers == 0, "flushed line dirty in the L2, no sharers");
+  tb::CheckEq<uint32_t>("E0 reads P0's flushed data", h.Load(E0, A), 0x0A0A0A0Au);
+  tb::CheckEq<uint32_t>("P0 refills after the flush", h.Load(P0, B), 0x0B0B0B0Bu);
+
+  // A write-through cache has nothing to write back.
+  h.Load(E1, A);
+  h.TakeBus();
+  h.Flush(E1);
+  ExpectBus(h, {}, "a write-through flush is silent");
+  tb::CheckEq<int>("E1 flushed", h.StateOf(E1, A), I);
+  tb::Group("flush: modified lines written back, every line invalidated");
+}
+
+// A core whose clock runs at 1/4 sees each response at its own clock edge,
+// with the data the access performed with.
+void SlowCore() {
+  Harness h(46);
+  h.SetCoreSpeed(P0, 4);
+  h.SetCoreSpeed(E0, 0);
+  const uint32_t A = 0x00012000u;
+  h.Store(P1, A, 0x11111111u);
+  tb::CheckEq<uint32_t>("slow P0 loads P1's data", h.Load(P0, A), 0x11111111u);
+  h.Store(P0, A, 0x22222222u);
+  tb::CheckEq<uint32_t>("random-speed E0 loads it", h.Load(E0, A), 0x22222222u);
+  h.Store(E0, A + 4, 0x33333333u);
+  tb::CheckEq<uint32_t>("P1 sees E0's store", h.Load(P1, A + 4), 0x33333333u);
+  tb::Check(h.held() > 0, "some response was held for a paused core");
+  tb::Group("slow cores: responses held until the core's clock edge");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -453,6 +498,8 @@ int main(int argc, char** argv) {
   L2BackInvalidate();
   L2DirtyVictim();
   IcacheCoherence();
+  FlushCaches();
+  SlowCore();
 
   // 4 sets x 5 tags: more lines per set than any cache has ways, in every
   // cache, so evictions and writebacks race with snoops constantly.
@@ -463,6 +510,10 @@ int main(int argc, char** argv) {
   // Light traffic: ports mostly idle, so hits and short transactions
   // interleave differently from the saturated runs above.
   coh::RandomRun("random, light traffic", 14, true, 3, 200000, pool, 15);
+  // Power management: cores at 1/2, 1/4 and random speed, and caches
+  // flushed in the middle of the traffic.
+  coh::RandomRun("random, slow cores", 15, true, 3, 300000, pool, 70, {2, 1, 4, 0});
+  coh::RandomRun("random, flushes", 16, true, 3, 400000, pool, 70, {1, 0, 1, 2}, 40);
 
   return tb::Report("coherent_mem");
 }

@@ -22,23 +22,25 @@
 //     --dwaits=SPEC        latency of the memory port alone
 //     --max-cycles=N       timeout, default 1,000,000
 //     --trace=FILE.vcd     waveform dump (trace build only)
-//     --log=FILE           retirement trace of every hart
+//     --log=FILE           retirement trace of every core
 //     --uart-out=FILE      capture UART output to a file as well
 //     --lockstep           golden-ISS lockstep (single-core builds only)
 //     --probe-all          check the coherence invariants of every line ever
 //                          touched, every cycle (slow; for debugging)
-//     --stats              print per-hart and per-cache statistics
+//     --stats              print per-core and per-cache statistics
 //     --quiet              suppress the summary line
 //
 // ---------------------------------------------------------------------------
 // COHERENCE CHECKING
 // ---------------------------------------------------------------------------
 // Always on. The harness keeps a reference copy of RAM and watches every
-// core's data port (the dmon_* outputs). The L1 caches answer each access in
-// exactly the cycle it takes effect (gnt and rvalid together), so:
+// core's data accesses as its L1 performs them (the dmon_* outputs: the
+// cycle each access takes effect in the memory system, which for a core
+// whose clock is slowed or paused can be earlier than the cycle the core
+// sees the response), so:
 //
-//   * every load from RAM must return the reference's current word;
-//   * every store to RAM updates the reference in the cycle it is answered.
+//   * every load from RAM must read the reference's current word;
+//   * every store to RAM updates the reference in the cycle it is performed.
 //
 // A stale copy anywhere in the system therefore surfaces as a wrong load on
 // the core that reads it, with the cycle, hart and address. In addition, the
@@ -48,6 +50,11 @@
 // the reference; every L1 copy also in the L2 with its sharer bit set; the
 // L2's data current when no L1 owns the line; memory current when the L2 copy
 // is clean.
+//
+// Each core's clock is gated by the PMU (rtl/power/pmu.sv), so its RVFI
+// outputs are sampled only in cycles core_en_o says end with its clock edge.
+// The trace and the statistics are per physical core; a hart that migrates
+// shows up on the core it moved to.
 //
 // Exit: a store of a non-zero word to `tohost` by any hart ends the run, with
 // the riscv-tests encoding (1 = pass, (n<<1)|1 = failed check n). Exit status
@@ -187,7 +194,7 @@ std::string Format(int hart, const Retirement& r, const ElfImage& elf) {
   else if (r.trap) extra += "  <TRAP>";
   if (r.halt) extra += "  <HALT>";
   char line[512];
-  std::snprintf(line, sizeof(line), "%8llu  h%d%s %6llu  0x%08x  %08x  %-28s %-24s%s",
+  std::snprintf(line, sizeof(line), "%8llu  c%d%s %6llu  0x%08x  %08x  %-28s %-24s%s",
                 static_cast<unsigned long long>(r.cycle), hart, CoreKind(hart),
                 static_cast<unsigned long long>(r.order), r.pc, r.insn,
                 Disassemble(r.insn, r.pc).c_str(), elf.SymbolAt(r.pc).c_str(), extra.c_str());
@@ -338,7 +345,7 @@ class CoherenceChecker {
     char b[256];
     auto cache_name = [](int c) {
       char n[32];
-      std::snprintf(n, sizeof(n), "hart %d's %s", c % kN, c < kN ? "L1D" : "L1I");
+      std::snprintf(n, sizeof(n), "core %d's %s", c % kN, c < kN ? "L1D" : "L1I");
       return std::string(n);
     };
     for (int c = 0; c < kNL1; ++c) {
@@ -506,7 +513,9 @@ int main(int argc, char** argv) {
   std::string coh_error;
 
   std::vector<std::deque<Retirement>> history(kN);
-  std::vector<uint64_t> retired(kN, 0), trapped(kN, 0);
+  std::vector<uint64_t> retired(kN, 0), trapped(kN, 0), core_run(kN, 0);
+  uint64_t migrations = 0;
+  bool mig_busy_prev = false;
   uint64_t events[kNL1][8] = {};
   uint64_t l2ev[4] = {};
   uint64_t txns[8] = {};
@@ -613,21 +622,14 @@ int main(int argc, char** argv) {
     }
     if (!traffic_error.empty() && coh_error.empty()) coh_error = traffic_error;
 
-    // 3a. data ports: collect this cycle's completed accesses
+    // 3a. data accesses performed this cycle, and the power state
     struct Acc { int h; uint32_t addr; bool we; uint8_t be; uint32_t wdata, rdata; bool err; };
     Acc acc[kN];
     int nacc = 0;
     std::vector<uint32_t> probe_lines;
     for (int h = 0; h < kN; ++h) {
-      const bool gnt = vlb::Bit(top->dmon_gnt_o, h);
-      const bool rvalid = vlb::Bit(top->dmon_rvalid_o, h);
-      if (gnt != rvalid && coh_error.empty()) {
-        char b[128];
-        std::snprintf(b, sizeof(b), "cycle %llu: hart %d's L1 answered gnt=%d rvalid=%d",
-                      static_cast<unsigned long long>(cycle), h, gnt, rvalid);
-        coh_error = b;
-      }
-      if (!gnt) continue;
+      if (vlb::Bit(top->core_en_o, h)) ++core_run[h];
+      if (!vlb::Bit(top->dmon_valid_o, h)) continue;
       Acc& a = acc[nacc++];
       a.h = h;
       a.addr = static_cast<uint32_t>(vlb::Get(top->dmon_addr_o, 32 * h, 32));
@@ -673,9 +675,10 @@ int main(int argc, char** argv) {
         if (a.rdata != coh.Word(a.addr)) {
           char b[200];
           std::snprintf(b, sizeof(b),
-                        "cycle %llu: hart %d (%s-core) loaded %08x from %08x; the coherent "
-                        "value is %08x",
-                        static_cast<unsigned long long>(cycle), a.h, CoreKind(a.h), a.rdata,
+                        "cycle %llu: core %d (%s-core, hart %u) loaded %08x from %08x; the "
+                        "coherent value is %08x",
+                        static_cast<unsigned long long>(cycle), a.h, CoreKind(a.h),
+                        static_cast<unsigned>(vlb::Get(top->hart_id_o, 32 * a.h, 32)), a.rdata,
                         a.addr & ~3u, coh.Word(a.addr));
           coh_error = b;
         }
@@ -693,9 +696,12 @@ int main(int argc, char** argv) {
       }
     }
 
-    // 3d. retirements
+    if (top->mig_busy_o && !mig_busy_prev) ++migrations;
+    mig_busy_prev = top->mig_busy_o != 0;
+
+    // 3d. retirements (a core's outputs only count at its own clock edges)
     for (int h = 0; h < kN; ++h) {
-      if (!vlb::Bit(top->rvfi_valid_o, h)) continue;
+      if (!vlb::Bit(top->rvfi_valid_o, h) || !vlb::Bit(top->core_en_o, h)) continue;
       Retirement r;
       r.cycle = cycle;
       r.order = vlb::Get(top->rvfi_order_o, 64 * h, 64);
@@ -827,7 +833,7 @@ int main(int argc, char** argv) {
                  opt.elf_path.c_str(), wcfg.Describe().c_str(),
                  static_cast<unsigned long long>(cycle));
     for (int h = 0; h < kN; ++h) {
-      std::fprintf(stderr, "\nhart %d (%s-core): retired %llu, traps %llu; last %zu:\n", h,
+      std::fprintf(stderr, "\ncore %d (%s-core): retired %llu, traps %llu; last %zu:\n", h,
                    CoreKind(h), static_cast<unsigned long long>(retired[h]),
                    static_cast<unsigned long long>(trapped[h]), history[h].size());
       for (const Retirement& r : history[h]) std::fprintf(stderr, "%s\n", Format(h, r, elf).c_str());
@@ -844,7 +850,7 @@ int main(int argc, char** argv) {
     dump("LOCKSTEP MISMATCH");
     rc = 5;
   } else if (halted) {
-    std::fprintf(stderr, "\n%s: hart %d HALTED\n", kSimName, halt_hart);
+    std::fprintf(stderr, "\n%s: core %d HALTED\n", kSimName, halt_hart);
     dump("CORE HALTED");
     rc = 3;
   } else if (timeout) {
@@ -853,7 +859,7 @@ int main(int argc, char** argv) {
     dump("TIMEOUT");
     rc = 4;
   } else if (tohost_raw != 1u) {
-    std::fprintf(stderr, "\n%s: PROGRAM FAILED on hart %d, tohost=%u (raw 0x%08x)\n", kSimName,
+    std::fprintf(stderr, "\n%s: PROGRAM FAILED on core %d, tohost=%u (raw 0x%08x)\n", kSimName,
                  exit_hart, tohost_raw >> 1, tohost_raw);
     dump("PROGRAM FAILED");
     rc = 1;
@@ -862,8 +868,11 @@ int main(int argc, char** argv) {
   if (opt.stats) {
     std::printf("%s stats (%d P + %d E):\n", kSimName, kNumP, kN - kNumP);
     for (int h = 0; h < kN; ++h) {
-      std::printf("  hart %d (%s): instret=%llu\n", h, CoreKind(h),
-                  static_cast<unsigned long long>(retired[h]));
+      std::printf("  core %d (%s): instret=%llu clocked=%llu/%llu cycles, now hart %u\n", h,
+                  CoreKind(h), static_cast<unsigned long long>(retired[h]),
+                  static_cast<unsigned long long>(core_run[h]),
+                  static_cast<unsigned long long>(cycle),
+                  static_cast<unsigned>(vlb::Get(top->hart_id_o, 32 * h, 32)));
       for (int side = 0; side < 2; ++side) {
         const int c = side * kN + h;
         std::printf("    %s:", side == 0 ? "L1D" : "L1I");
@@ -891,6 +900,7 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(traffic_done[0]),
                 static_cast<unsigned long long>(traffic_done[1]),
                 static_cast<unsigned long long>(traffic_checked));
+    std::printf("  migrations: %llu\n", static_cast<unsigned long long>(migrations));
     std::printf("  coherence: loads_checked=%llu line_probes=%llu lines_touched=%zu\n",
                 static_cast<unsigned long long>(coh.loads_checked),
                 static_cast<unsigned long long>(coh.probes()), coh.all_lines().size());

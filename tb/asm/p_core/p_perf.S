@@ -17,6 +17,11 @@
  * write and an event in the same cycle resolve in favour of the write, so the
  * event would otherwise be lost. Nothing that could interlock is placed next
  * to the csrr that reads a counter.
+ *
+ * NO-HALT-MODE: this test checks exact event counter values. A halt kills the
+ * instruction at the boundary and re-executes it on resume, which the core's
+ * own counters (and predictor) rightly see, so the halt-mode run
+ * (run_asm.sh, "random:3+h") skips it.
  * ============================================================================
  */
 #include "test_macros.h"

@@ -46,9 +46,15 @@ for seed_base in $(seq 1 "$NSEED"); do
       fail=$((fail+1)); failed+=("$name:asm"); continue
     fi
     ok=1
+    # Every other program's random-latency run also halts the core through
+    # its debug port every ~50 cycles and compares the halted state with the
+    # ISS (tb_core.cpp, HALT MODE). Behind the cache the PMU owns that port.
+    hflag=()
+    [ "$CACHED" != 1 ] && [ $((i % 2)) -eq 1 ] && hflag=(--halt-every=50:$seed)
     for waits in "0" "random:$seed"; do
       log="$OUT/$name.w${waits//:/_}.log"
-      if ! "$SIM" --elf "$elf" --waits="$waits" --lockstep --max-cycles=2000000 \
+      [ "$waits" = 0 ] && hf=() || hf=("${hflag[@]}")
+      if ! "$SIM" --elf "$elf" --waits="$waits" "${hf[@]}" --lockstep --max-cycles=2000000 \
            > "$log" 2>&1; then
         printf "  %-14s \033[31mLOCKSTEP FAIL\033[0m (waits=%s)\n" "$name" "$waits"
         tail -40 "$log" | sed 's/^/      /'

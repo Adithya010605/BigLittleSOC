@@ -6,7 +6,8 @@
 # Each program is self-checking (start_mc.S collects every hart's result),
 # and the harness checks coherence on every load regardless (tb/soc/tb_soc.cpp).
 # An .expected file next to a program is compared with its UART output.
-# mc_stress*.c is built once per seed in SOC_STRESS_SEEDS.
+# mc_stress*.c is built once per seed in SOC_STRESS_SEEDS, and once more
+# with the clusters' clocks divided (DVFS).
 #
 # Every program runs at five latency settings -- zero, fixed, two random
 # streams, and "fast fetch, slow data" (the single-core scripts' setting;
@@ -49,6 +50,8 @@ for src in "$ROOT"/sw/soc_tests/*.c; do
   base=$(basename "$src" .c)
   if [[ "$base" == mc_stress* ]]; then
     for s in $SEEDS; do JOBS+=("${base}_s$s|$src|-DSEED=$s"); done
+    # and once with the P cluster at 1/2 speed, the E cluster at 1/4
+    JOBS+=("${base}_dvfs|$src|-DSEED=5 -DSTRESS_DVFS=0x9")
   else
     JOBS+=("$base|$src|")
   fi
@@ -60,8 +63,11 @@ for job in "${JOBS[@]}"; do
   IFS='|' read -r name src extra <<< "$job"
   base=$(basename "$src" .c)
   elf="$OUT/$name.elf"
+  # A program may have an assembly part beside it: <name>.S.
+  srcs=("$src")
+  [ -f "${src%.c}.S" ] && srcs+=("${src%.c}.S")
   # shellcheck disable=SC2086
-  if ! "$RVCC" $CFLAGS $extra -T "$LDS" -Wl,--build-id=none -o "$elf" "$src" "${COMMON[@]}" -lgcc \
+  if ! "$RVCC" $CFLAGS $extra -T "$LDS" -Wl,--build-id=none -o "$elf" "${srcs[@]}" "${COMMON[@]}" -lgcc \
         > "$OUT/$name.build.log" 2>&1; then
     printf "  %-26s \033[31mCC FAIL\033[0m\n" "$name"
     sed 's/^/      /' "$OUT/$name.build.log" | head -20

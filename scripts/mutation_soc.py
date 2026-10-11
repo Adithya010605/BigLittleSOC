@@ -3,18 +3,19 @@
 # mutation_coherence.py — do the coherence tests detect broken coherence?
 #
 # The companion of mutation_test.sh for the memory system. Each mutation is
-# one realistic defect in rtl/cache or rtl/coherence -- a snoop that forgets
-# to invalidate, a flush that never reaches memory, a race the RTL stops
-# handling. For each, the script rebuilds and runs:
+# one realistic defect in rtl/cache, rtl/coherence, rtl/interconnect,
+# rtl/periph or rtl/power -- a snoop that forgets to invalidate, a flush that
+# never reaches memory, a race the RTL stops handling, a migration that drops
+# a register. For each, the script rebuilds and runs:
 #
 #   unit  the coherence unit testbenches (tb/unit/coherence): small geometry
 #         first, then full size with the directed MSI scenarios;
 #   soc   the 2P+2E SoC on multi-core programs (sw/soc_tests), whose only
 #         oracle for racing accesses is the harness's coherence checker, one
 #         of them under checked background traffic and one with its UART
-#         output compared; then a one-core cached P-core on the directed
-#         tests that exercise access faults, self-modifying code and timer
-#         interrupts.
+#         output compared, and the power-management and migration programs;
+#         then a one-core cached P-core on the directed tests that exercise
+#         access faults, self-modifying code and timer interrupts.
 #
 # Every `kill` mutation must be killed in both columns (the unit column only
 # where the block has a unit testbench). A mutation that breaks only
@@ -42,6 +43,7 @@ SRAM = "periph/sram_ctrl.sv"
 IRQ = "periph/irq_ctrl.sv"
 SYSCTL = "periph/sysctl.sv"
 UART = "periph/uart.sv"
+PMU = "power/pmu.sv"
 
 # name, expect, file (under rtl/), search, replace. The unit testbench is
 # chosen by the file: the coherence harnesses for rtl/cache and
@@ -57,7 +59,8 @@ MUTATIONS = [
      "        snp_upd  = 1'b1;\n        snp_next = MSI_I;\n      end else if",
      "        snp_upd  = 1'b1;\n        snp_next = MSI_S;\n      end else if"),
     ("core_ignores_snoop_cycle", "kill", L1,
-     "        if (core_req_i && !snoop_valid_i) begin", "        if (core_req_i) begin"),
+     "        end else if (core_req_i && core_en_i && !snoop_valid_i) begin",
+     "        end else if (core_req_i && core_en_i) begin"),
     # ---- requester side ---------------------------------------------------
     ("store_hit_on_S", "kill", L1,
      "            if (c_hit && state_q[c_way][c_idx] == MSI_M) begin",
@@ -71,8 +74,8 @@ MUTATIONS = [
     ("wt_store_skips_own_copy", "kill", L1,
      "          if (!bus_err_i && r_hit) begin", "          if (1'b0) begin"),
     ("uncached_error_dropped", "kill", L1,
-     "          core_err_o    = bus_err_i;\n          core_rdata_o  = line_word(bus_rdata_i, rq_slot);",
-     "          core_err_o    = 1'b0;\n          core_rdata_o  = line_word(bus_rdata_i, rq_slot);"),
+     "          resp_err   = bus_err_i;\n          resp_rdata = line_word(bus_rdata_i, rq_slot);",
+     "          resp_err   = 1'b0;\n          resp_rdata = line_word(bus_rdata_i, rq_slot);"),
     # ---- bus, L2 and snoop filter -------------------------------------------
     ("filter_never_snoops", "kill", BUS,
      "  assign hit_targets = lk_sharers & ~m_bit;", "  assign hit_targets = '0;"),
@@ -121,6 +124,58 @@ MUTATIONS = [
      "          rr_q[j]         <= rr_q[j];"),
     ("xbar_idle_cycle_between_grants", "perf", XBAR,
      "  assign slave_free = ~busy_q | s_rsp_valid_i;", "  assign slave_free = ~busy_q;"),
+    # ---- slow cores and flush (L1) -------------------------------------------
+    ("hold_answers_paused_core", "kill", L1,
+     "    if (done_resp) begin\n      if (core_en_i) begin",
+     "    if (done_resp) begin\n      if (1'b1) begin"),
+    # A hit answered in a paused cycle is lost to the core, which asks again:
+    # the access is performed twice. For a cacheable load or store that is
+    # idempotent -- only the LRU and the event counters notice -- so this
+    # one is performance-only, and the unit harness (which sees the access
+    # reported twice and answered while paused) must kill it.
+    ("hit_ignores_core_en", "perf", L1,
+     "        end else if (core_req_i && core_en_i && !snoop_valid_i) begin",
+     "        end else if (core_req_i && !snoop_valid_i) begin"),
+    ("hold_loses_data", "kill", L1,
+     "          core_rdata_o  = hold_rdata_q;", "          core_rdata_o  = '0;"),
+    ("flush_drops_modified", "kill", L1,
+     "          if (WRITE_BACK && state_q[fl_way_q][fl_idx_q] == MSI_M) begin\n            cs_d = C_FWB;",
+     "          if (1'b0) begin\n            cs_d = C_FWB;"),
+    ("flush_done_after_one_line", "kill", L1,
+     "            if (fl_last) cs_d = C_FLUSHED;", "            cs_d = C_FLUSHED;"),
+    ("flush_wb_race_ignored", "kill", L1,
+     "        if (state_q[fl_way_q][fl_idx_q] != MSI_M) begin\n          // A snoop took the line",
+     "        if (1'b0) begin\n          // A snoop took the line"),
+    # ---- power management and migration (no unit testbench) ------------------
+    ("pmu_quiesce_no_wait", "kill", PMU,
+     "M_QUIESCE: if (halted_i[m_src_q] &&", "M_QUIESCE: if (1'b1 &&"),
+    ("pmu_skips_last_item", "kill", PMU,
+     "          if (m_k_q == 6'(NITEMS - 1)) begin\n            ms_q  <= M_TRANSFER;",
+     "          if (m_k_q == 6'(NITEMS - 2)) begin\n            ms_q  <= M_TRANSFER;"),
+    ("pmu_register_off_by_one", "kill", PMU,
+     "  assign dbg_rf_addr_o  = (item < 31) ? 5'(item + 1) : 5'd0;",
+     "  assign dbg_rf_addr_o  = (item < 31) ? 5'(item) : 5'd0;"),
+    ("pmu_hartid_stays", "kill", PMU,
+     "          ctx_q[m_dst_q]    <= m_ctx_q;", "          ctx_q[m_dst_q]    <= m_dst_q;"),
+    ("pmu_source_keeps_running", "kill", PMU,
+     "          active_q[m_src_q] <= 1'b0;\n", ""),
+    ("pmu_irq_by_core", "kill", PMU,
+     "      irq_software_o[c] = active_q[c] && ctx_irq_software_i[ctx_q[c]];",
+     "      irq_software_o[c] = active_q[c] && ctx_irq_software_i[c];"),
+    ("pmu_parked_clock_runs", "kill", PMU,
+     "(pulse[k] && !(halted_i[c] && (sleep_q[c] || !active_q[c])))", "pulse[k]"),
+    ("pmu_divider_ignored", "kill", PMU,
+     "    for (int k = 0; k < 2; k++) pulse[k] = divcnt_q[k] == 2'd0;",
+     "    for (int k = 0; k < 2; k++) pulse[k] = 1'b1;"),
+    ("pmu_irq_does_not_wake", "kill", PMU,
+     "        if (ctx_sel_wake[c] || (sleep_q[c] && irq_any[c])) sleep_q[c] <= 1'b0;",
+     "        if (ctx_sel_wake[c]) sleep_q[c] <= 1'b0;"),
+    ("pmu_off_before_flushed", "kill", PMU,
+     "          end else if (flushed) begin", "          end else if (1'b1) begin"),
+    ("pmu_no_hysteresis", "kill", PMU,
+     "((is_p(c) && low_streak_q[c] >= hyst_q) ||", "((is_p(c) && low_streak_q[c] >= 8'd0) ||"),
+    ("pmu_budget_ignored", "kill", PMU,
+     "    if (np_active > int'(budget_q)) begin", "    if (1'b0) begin"),
     # ---- peripherals (no unit testbench: the system level must catch them) ----
     ("sram_ignores_strobes", "kill", SRAM,
      "line_merge(mem[lidx(req_addr_i)], req_wdata_i, req_wstrb_i)", "req_wdata_i"),
@@ -134,7 +189,7 @@ MUTATIONS = [
      "    for (int l = 0; l < 4; l++) if (wbe[l]) tx_byte = wword[8*l +: 8];"),
 ]
 
-UNIT_RTL = ["cache/cache_pkg.sv", "cache/l1_dcache.sv", "cache/l2_cache.sv",
+UNIT_RTL = ["power/clock_gate.sv", "cache/cache_pkg.sv", "cache/l1_dcache.sv", "cache/l2_cache.sv",
             "coherence/snoop_bus.sv", "coherence/coherent_mem.sv"]
 XBAR_UNIT = ("unit/xbar", "interconnect", "tb_qos_xbar.cpp", "qos_xbar",
              ["cache/cache_pkg.sv", "interconnect/qos_xbar.sv"])
@@ -149,7 +204,10 @@ SOC_RUNS = [("mc_hello", [], True), ("mc_sysctl", [], False), ("mc_bus_errors", 
             ("mc_pingpong", [], False),
             ("mc_pingpong", ["--traffic=40"], False), ("mc_lock", [], False),
             ("mc_l2_thrash", [], False), ("mc_stress_s1", [], False), ("mc_stress_s2", [], False),
-            ("mc_stress_s3", [], False), ("mc_stress_s4", [], False)]
+            ("mc_stress_s3", [], False), ("mc_stress_s4", [], False),
+            ("mc_migrate", [], False), ("mc_sleep", [], False), ("mc_dvfs", [], False),
+            ("mc_power", [], False), ("mc_power_stress", [], False), ("mc_auto", [], False),
+            ("mc_stress_dvfs", [], False)]
 SOC_PROGRAMS = sorted({r[0] for r in SOC_RUNS})
 CACHED_TESTS = ["trap_exceptions", "mem_align", "fence_i", "irq_timer"]   # build/cached_p_core/asm
 
@@ -181,7 +239,7 @@ def build_and_run(d, label, harness_dir, harness, top, rtl, flags):
 
 
 def run_unit(d, f):
-    if f.startswith("periph/"):
+    if f.startswith("periph/") or f.startswith("power/"):
         return "(no unit testbench)"
     if f.startswith("interconnect/"):
         label, hdir, harness, top, rtl = XBAR_UNIT

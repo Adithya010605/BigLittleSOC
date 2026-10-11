@@ -25,6 +25,10 @@
 
 static inline int mc_is_pcore(int h) { return h < NUM_P; }
 
+// Each hart's result, published by start_mc.S when its main returns:
+// (ret << 1) | 1, or 0 while it is still running.
+extern volatile uint32_t mc_result[NHARTS];
+
 // Stops the compiler from caching, merging or reordering memory accesses
 // across this point. The hardware needs no fence (see above).
 #define mc_compiler_barrier() __asm__ volatile("" ::: "memory")

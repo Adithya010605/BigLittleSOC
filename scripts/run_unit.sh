@@ -43,6 +43,8 @@ printf "==> unit tests\n"
 for cpp in "${HARNESSES[@]}"; do
   base=$(basename "$cpp" .cpp)      # tb_alu
   name=${base#tb_}                  # alu, decoder_rv32m, ...
+  # UNIT_ONLY=<glob> runs only the matching harnesses (e.g. 'coherent_mem*').
+  if [ -n "${UNIT_ONLY:-}" ] && [[ $name != $UNIT_ONLY ]]; then continue; fi
   mod=$(grep -m1 -oP '^// UNIT-TOP:\s*\K\S+' "$cpp" || true)
   [ -z "$mod" ] && mod=$name
   read -r -a vflags <<< "$(grep -m1 -oP '^// UNIT-VFLAGS:\s*\K.*' "$cpp" || true)"

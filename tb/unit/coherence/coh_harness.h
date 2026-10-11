@@ -6,14 +6,17 @@
 // protocol (hold until gnt), backs the L2's memory port with a memory model
 // of configurable latency, and checks, every cycle:
 //
-//   1. ATOMICITY   gnt and rvalid rise together on every port. The caches
-//                  promise this; the checks below depend on it.
-//   2. VALUES      every load and every instruction fetch returns the word
-//                  the reference memory holds. The reference applies each
-//                  store in the cycle the issuing port is answered, which (by
-//                  1) is the cycle the store takes effect. This is the
-//                  coherence oracle: any stale copy, in any L1 or in the L2,
-//                  shows up as a wrong load.
+//   1. ATOMICITY   gnt and rvalid rise together on every port, only in a
+//                  cycle the core's clock enable is high, and only for an
+//                  access the cache's performed-access monitor has reported
+//                  (in that cycle or, for a held response, earlier) -- with
+//                  the data the monitor reported.
+//   2. VALUES      every load and every instruction fetch reads the word the
+//                  reference memory holds. The reference applies each store
+//                  in the cycle the monitor reports it performed, which at
+//                  full core speed is the cycle the port is answered. This is
+//                  the coherence oracle: any stale copy, in any L1 or in the
+//                  L2, shows up as a wrong load.
 //   3. SWMR        for every line touched so far: at most one L1 holds it M,
 //                  and then no other L1 holds it at all. Write-through data
 //                  caches and instruction caches never hold M.
@@ -27,6 +30,13 @@
 //                  the same in memory as in the reference. This is what
 //                  catches a lost writeback anywhere in the hierarchy.
 //   8. LIVENESS    no request waits longer than a bound.
+//   9. FLUSH       when a core's flush completes, neither of its L1s holds
+//                  any line (checks 5-7 meanwhile prove nothing modified was
+//                  lost on the way out).
+//
+// Each core's clock enable can follow a 1/1, 1/2 or 1/4 divider, or a random
+// pattern (SetCoreSpeed), and Randomise can flush idle cores' caches in the
+// middle of the traffic (SetFlushRate).
 //
 // Checks 3-7 read the caches through the design's debug probe, one line at a
 // time, between settling the cycle and the clock edge, and skip the line (and
@@ -141,6 +151,7 @@ class Harness {
     }
     for (uint32_t i = 0; i < kMmioWords; ++i) mmio_[i] = mmio_ref_[i] = 0x10000000u + i;
     if (const char* t = std::getenv("COH_TRACE")) trace_until_ = std::strtoull(t, nullptr, 0);
+    for (int c = 0; c < kN; ++c) speed_[c] = 1;
     Reset();
   }
   ~Harness() {
@@ -158,6 +169,11 @@ class Harness {
     mem_wait_ = DrawLatency();
   }
   void SetProbe(bool on) { probe_ = on; }
+  // Core c's clock enable: 1 (always), 2 or 4 (divider), 0 (random, ~1/2).
+  void SetCoreSpeed(int c, int mode) { speed_[c] = mode; }
+  // Chance per cycle, in 1/100000, that Randomise starts flushing a core.
+  void SetFlushRate(int per100k) { flush_rate_ = per100k; }
+  uint64_t flushes() const { return flushes_; }
   void SetLivenessBound(uint64_t c) { liveness_bound_ = c; }
   // Prints every bus transaction and port completion up to `until` cycles
   // (COH_TRACE=<cycles> in the environment sets it for every harness).
@@ -165,6 +181,15 @@ class Harness {
 
   // ---- issuing ----
   bool Busy(int p) const { return port_[p].busy; }
+  bool Flushing(int c) const { return flush_[c] != FL_OFF; }
+  // Flush core c's caches (its ports must be idle), running other traffic
+  // already issued; returns once the flush is released.
+  void Flush(int c, uint64_t max_cycles = 20000) {
+    StartFlush(c);
+    const uint64_t end = cycle_ + max_cycles;
+    while (flush_[c] != FL_OFF && cycle_ < end) Cycle();
+    tb::Check(flush_[c] == FL_OFF, "flush of core " + std::to_string(c) + " never completed");
+  }
   bool AnyBusy() const {
     for (int p = 0; p < kNL1; ++p)
       if (port_[p].busy) return true;
@@ -239,6 +264,7 @@ class Harness {
   uint64_t l2_events(int ev) const { return l2_events_[ev]; }
   uint64_t txn_count(int cmd) const { return txn_count_[cmd]; }
   uint64_t completed() const { return completed_; }
+  uint64_t held() const { return held_; }
   uint64_t max_latency() const { return max_latency_; }
 
   // Randomised traffic on every port over a pool of lines.
@@ -260,9 +286,29 @@ class Harness {
     bool busy = false;
     Access acc;
     uint64_t start = 0;
+    bool performed = false;     // the monitor has reported this access
+    uint64_t perf_cycle = 0;
+    uint32_t perf_rdata = 0;
+    bool perf_err = false;
     uint32_t last_rdata = 0;
     bool last_err = false;
   };
+
+  enum FlushState { FL_OFF, FL_PENDING, FL_ON, FL_RELEASE };   // PENDING: draining its ports
+  void StartFlush(int c) {
+    tb::Check(!port_[c].busy && !port_[kN + c].busy, "flush started with a port busy");
+    flush_[c] = FL_ON;
+    flush_start_[c] = cycle_;
+  }
+  bool CoreEnable(int c) {
+    switch (speed_[c]) {
+      case 1: return true;
+      case 2: return (cycle_ & 1) == 0;
+      case 4: return (cycle_ & 3) == 0;
+      default: return (rng_.Next() & 1) != 0;
+    }
+  }
+  void CheckFlushed(int c);
 
   static uint32_t Word(const std::vector<uint8_t>& m, uint32_t a) {
     return uint32_t(m[a]) | (uint32_t(m[a + 1]) << 8) | (uint32_t(m[a + 2]) << 16) |
@@ -279,6 +325,9 @@ class Harness {
     top_->clk_i = 0;
     top_->core_req_i = 0;
     top_->instr_req_i = 0;
+    top_->core_en_i = (1u << kN) - 1;
+    top_->l1_clk_en_i = (1u << kN) - 1;
+    top_->flush_i = 0;
     top_->mem_rvalid_i = 0;
     top_->mem_err_i = 0;
     top_->dbg_addr_i = 0;
@@ -323,16 +372,30 @@ class Harness {
   uint64_t liveness_bound_ = 5000;
   uint64_t trace_until_ = 0;
 
+  int speed_[kN];
+  bool en_[kN] = {};
+  FlushState flush_[kN] = {};
+  uint64_t flush_start_[kN] = {};
+  int flush_rate_ = 0;
+  uint64_t flushes_ = 0;
+
   uint64_t events_[kNL1][8] = {};
   uint64_t l2_events_[4] = {};
   uint64_t txn_count_[8] = {};
   uint64_t completed_ = 0;
+  uint64_t held_ = 0;             // responses delivered after the access performed
   uint64_t max_latency_ = 0;
   int failures_reported_ = 0;
 };
 
 // ---------------------------------------------------------------------------
 inline void Harness::DriveRequests() {
+  for (int c = 0; c < kN; ++c) {
+    en_[c] = CoreEnable(c);
+    vlb::Set(top_->core_en_i, c, 1, en_[c] ? 1 : 0);
+    if (flush_[c] == FL_RELEASE) flush_[c] = FL_OFF;
+    vlb::Set(top_->flush_i, c, 1, flush_[c] == FL_ON ? 1 : 0);
+  }
   for (int p = 0; p < kN; ++p) {
     const Port& d = port_[p];
     vlb::Set(top_->core_req_i, p, 1, d.busy ? 1 : 0);
@@ -450,37 +513,30 @@ inline void Harness::Sample() {
   // cycle's stores, which is what the cache arrays hold until the edge.
   if (probe_) ProbeChecks();
 
-  // Port responses. Loads are checked against the reference first, then this
-  // cycle's stores are applied, so the order within a cycle never matters
-  // (two ports cannot complete conflicting accesses to one line in the same
-  // cycle: one of them would need the bus).
+  // Performed accesses. Loads are checked against the reference first, then
+  // this cycle's stores are applied, so the order within a cycle never
+  // matters (two caches cannot perform conflicting accesses to one line in
+  // the same cycle: one of them would need the bus).
   struct Done { int p; Access a; uint32_t rdata; bool err; };
   std::vector<Done> done;
   for (int p = 0; p < kNL1; ++p) {
     Port& pt = port_[p];
-    const int c = IsInstr(p) ? p - kN : p;
-    const bool gnt = IsInstr(p) ? vlb::Bit(top_->instr_gnt_o, c) : vlb::Bit(top_->core_gnt_o, c);
-    const bool rvalid =
-        IsInstr(p) ? vlb::Bit(top_->instr_rvalid_o, c) : vlb::Bit(top_->core_rvalid_o, c);
-    if (!pt.busy) {
-      tb::Check(!gnt && !rvalid, "port answered with no request outstanding");
+    if (!vlb::Bit(top_->perf_valid_o, p)) continue;
+    if (!pt.busy || pt.performed) {
+      Report("MONITOR: L1 %d reported an access with none outstanding", p);
       continue;
     }
-    if (!tb::Check(gnt == rvalid, "gnt and rvalid not simultaneous (port " +
-                                      std::to_string(p) + ")"))
-      continue;
-    if (!gnt) {
-      if (cycle_ - pt.start > liveness_bound_) {
-        tb::Check(false, "LIVENESS: port " + std::to_string(p) + " waited more than " +
-                             std::to_string(liveness_bound_) + " cycles");
-        pt.start = cycle_;   // report once per bound
-      }
-      continue;
-    }
-    const uint32_t rdata = static_cast<uint32_t>(
-        IsInstr(p) ? vlb::Get(top_->instr_rdata_o, 32 * c, 32) : vlb::Get(top_->core_rdata_o, 32 * c, 32));
-    const bool err = IsInstr(p) ? vlb::Bit(top_->instr_err_o, c) : vlb::Bit(top_->core_err_o, c);
-    done.push_back({p, pt.acc, rdata, err});
+    const uint32_t a = static_cast<uint32_t>(vlb::Get(top_->perf_addr_o, 32 * p, 32));
+    const bool we = vlb::Bit(top_->perf_we_o, p);
+    const uint32_t be = static_cast<uint32_t>(vlb::Get(top_->perf_be_o, 4 * p, 4));
+    const uint32_t wd = static_cast<uint32_t>(vlb::Get(top_->perf_wdata_o, 32 * p, 32));
+    if (a != pt.acc.addr || we != pt.acc.we || be != pt.acc.be || (we && wd != pt.acc.wdata))
+      Report("MONITOR: access to %08x reported by L1 %d is not the one outstanding", a, p);
+    pt.performed = true;
+    pt.perf_cycle = cycle_;
+    pt.perf_rdata = static_cast<uint32_t>(vlb::Get(top_->perf_rdata_o, 32 * p, 32));
+    pt.perf_err = vlb::Bit(top_->perf_err_o, p);
+    done.push_back({p, pt.acc, pt.perf_rdata, pt.perf_err});
   }
 
   for (const Done& d : done) {
@@ -505,7 +561,6 @@ inline void Harness::Sample() {
   }
   for (const Done& d : done) {
     const uint32_t a = d.a.addr & ~3u;
-    Port& pt = port_[d.p];
     if (cycle_ < trace_until_)
       std::printf("  %6llu  port %d %s %08x be=%x %s %08x%s\n",
                   static_cast<unsigned long long>(cycle_), d.p,
@@ -523,12 +578,83 @@ inline void Harness::Sample() {
             r = (r & ~(0xFFu << (8 * b))) | (d.a.wdata & (0xFFu << (8 * b)));
       }
     }
-    pt.last_rdata = d.rdata;
-    pt.last_err = d.err;
+  }
+
+  // Port responses: what the core sees, possibly some cycles later.
+  for (int p = 0; p < kNL1; ++p) {
+    Port& pt = port_[p];
+    const int c = IsInstr(p) ? p - kN : p;
+    const bool gnt = IsInstr(p) ? vlb::Bit(top_->instr_gnt_o, c) : vlb::Bit(top_->core_gnt_o, c);
+    const bool rvalid =
+        IsInstr(p) ? vlb::Bit(top_->instr_rvalid_o, c) : vlb::Bit(top_->core_rvalid_o, c);
+    if (!pt.busy) {
+      tb::Check(!gnt && !rvalid, "port answered with no request outstanding");
+      continue;
+    }
+    if (!tb::Check(gnt == rvalid, "gnt and rvalid not simultaneous (port " +
+                                      std::to_string(p) + ")"))
+      continue;
+    if (!gnt) {
+      if (cycle_ - pt.start > liveness_bound_) {
+        tb::Check(false, "LIVENESS: port " + std::to_string(p) + " waited more than " +
+                             std::to_string(liveness_bound_) + " cycles");
+        pt.start = cycle_;   // report once per bound
+      }
+      continue;
+    }
+    if (!en_[c]) {
+      Report("ATOMICITY: port %d answered while its core's clock is paused", p);
+      continue;
+    }
+    if (!pt.performed) {
+      Report("ATOMICITY: port %d answered an access the monitor never reported", p);
+      continue;
+    }
+    const uint32_t rdata = static_cast<uint32_t>(
+        IsInstr(p) ? vlb::Get(top_->instr_rdata_o, 32 * c, 32) : vlb::Get(top_->core_rdata_o, 32 * c, 32));
+    const bool err = IsInstr(p) ? vlb::Bit(top_->instr_err_o, c) : vlb::Bit(top_->core_err_o, c);
+    if (pt.perf_cycle != cycle_) ++held_;
+    if (err != pt.perf_err || (!pt.acc.we && rdata != pt.perf_rdata))
+      Report("HOLD: answer %08x on port %d is not the data the access performed with", rdata, p);
+    pt.last_rdata = rdata;
+    pt.last_err = err;
     pt.busy = false;
+    pt.performed = false;
     ++completed_;
     max_latency_ = std::max<uint64_t>(max_latency_, cycle_ - pt.start);
   }
+
+  // Flushes: a completed one is checked and released.
+  for (int c = 0; c < kN; ++c) {
+    if (flush_[c] != FL_ON) {
+      tb::Check(!vlb::Bit(top_->flush_done_o, c), "flush_done with no flush requested");
+      continue;
+    }
+    if (vlb::Bit(top_->flush_done_o, c)) {
+      CheckFlushed(c);
+      flush_[c] = FL_RELEASE;
+      ++flushes_;
+      if (cycle_ < trace_until_)
+        std::printf("  %6llu  core %d flushed in %llu cycles\n",
+                    static_cast<unsigned long long>(cycle_), c,
+                    static_cast<unsigned long long>(cycle_ - flush_start_[c]));
+    } else if (cycle_ - flush_start_[c] > liveness_bound_) {
+      tb::Check(false, "LIVENESS: flush of core " + std::to_string(c) + " is taking too long");
+      flush_start_[c] = cycle_;
+    }
+  }
+}
+
+inline void Harness::CheckFlushed(int c) {
+  for (uint32_t line : touched_) {
+    top_->dbg_addr_i = line;
+    top_->eval();
+    for (int p : {c, kN + c}) {
+      if (vlb::Get(top_->dbg_state_o, 2 * p, 2) != I)
+        Report("FLUSH: line %08x is still in L1 %d after its flush", line, p);
+    }
+  }
+  ++tb::g_checks;
 }
 
 inline void Harness::ProbeChecks() {
@@ -603,8 +729,16 @@ inline void Harness::Randomise(uint64_t cycles, const std::vector<uint32_t>& poo
                                int issue_pct) {
   const uint64_t end = cycle_ + cycles;
   while (cycle_ < end) {
+    for (int c = 0; c < kN; ++c) {
+      if (flush_rate_ > 0 && flush_[c] == FL_OFF &&
+          static_cast<int>(rng_.Next() % 100000) < flush_rate_)
+        flush_[c] = FL_PENDING;   // no new accesses; flush once both ports are idle
+      if (flush_[c] == FL_PENDING && !port_[c].busy && !port_[kN + c].busy) StartFlush(c);
+    }
     for (int p = 0; p < kNL1; ++p) {
-      if (port_[p].busy || static_cast<int>(rng_.Next() % 100) >= issue_pct) continue;
+      if (port_[p].busy || flush_[IsInstr(p) ? p - kN : p] != FL_OFF ||
+          static_cast<int>(rng_.Next() % 100) >= issue_pct)
+        continue;
       Access a;
       const uint64_t r = rng_.Next();
       const int kind = static_cast<int>(r % 1000);
@@ -647,21 +781,38 @@ inline std::vector<uint32_t> ConflictPool(uint32_t base, int sets, int tags, uin
 }
 
 // One randomised run: prints a summary line and records a check group.
+//
+// speeds, if given, sets each core's clock enable (Harness::SetCoreSpeed);
+// flush_rate flushes idle cores' caches now and then (SetFlushRate). Either
+// must then show its effect -- held responses, completed flushes -- or the
+// run fails.
 inline void RandomRun(const char* name, uint64_t seed, bool lat_random, int lat,
-                      uint64_t cycles, const std::vector<uint32_t>& pool, int issue_pct) {
+                      uint64_t cycles, const std::vector<uint32_t>& pool, int issue_pct,
+                      const std::vector<int>& speeds = {}, int flush_rate = 0) {
   Harness h(seed);
   h.SetMemLatency(lat_random, lat);
+  bool slow = false;
+  for (size_t c = 0; c < speeds.size() && c < size_t(kN); ++c) {
+    h.SetCoreSpeed(static_cast<int>(c), speeds[c]);
+    slow = slow || speeds[c] != 1;
+  }
+  h.SetFlushRate(flush_rate);
   h.Randomise(cycles, pool, issue_pct);
   std::printf("    %-30s %7llu accesses, max wait %3llu | bus:", name,
               static_cast<unsigned long long>(h.completed()),
               static_cast<unsigned long long>(h.max_latency()));
   for (int c = 0; c < 7; ++c)
     std::printf(" %s=%llu", CmdName(c), static_cast<unsigned long long>(h.txn_count(c)));
-  std::printf(" | L2: hit=%llu miss=%llu wb=%llu binv=%llu\n",
+  std::printf(" | L2: hit=%llu miss=%llu wb=%llu binv=%llu",
               static_cast<unsigned long long>(h.l2_events(L2_HIT)),
               static_cast<unsigned long long>(h.l2_events(L2_MISS)),
               static_cast<unsigned long long>(h.l2_events(L2_WRITEBACK)),
               static_cast<unsigned long long>(h.l2_events(L2_BACKINV)));
+  if (slow) std::printf(" | held=%llu", static_cast<unsigned long long>(h.held()));
+  if (flush_rate > 0) std::printf(" | flushes=%llu", static_cast<unsigned long long>(h.flushes()));
+  std::printf("\n");
+  if (slow) tb::Check(h.held() > 0, std::string(name) + ": no response was ever held");
+  if (flush_rate > 0) tb::Check(h.flushes() > 0, std::string(name) + ": no flush completed");
   // Each kind of transaction the configuration can produce must actually
   // have been produced, or the run proved less than it claims.
   bool ok = h.txn_count(RD) > 0 && h.txn_count(UNC_RD) > 0 && h.txn_count(UNC_WR) > 0 &&

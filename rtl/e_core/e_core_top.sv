@@ -27,7 +27,6 @@ module e_core_top
   import e_core_pkg::*;
 #(
   parameter logic [31:0] RESET_VECTOR = 32'h0000_0000,
-  parameter logic [31:0] HART_ID      = 32'h0000_0000,
   parameter bit          RVFI         = 1'b0
 ) (
   input  logic        clk_i,
@@ -56,6 +55,26 @@ module e_core_top
   input  logic        irq_timer_i,
   input  logic        irq_software_i,
   input  logic        irq_external_i,
+
+  // ---- Halt / debug port (rtl/power/pmu.sv) ----
+  // halt_req_i halts the core at the next instruction boundary it may be
+  // interrupted at; halted_o says it has stopped (pipeline empty, no fetch in
+  // flight, nothing left to write back). While halted, the register file,
+  // the CSRs and the resume PC can be read and written; deasserting
+  // halt_req_i resumes at dbg_pc_o. hart_id_i is what mhartid reads.
+  input  logic [31:0] hart_id_i,
+  input  logic        halt_req_i,
+  output logic        halted_o,
+  output logic        retire_o,
+  input  logic [4:0]  dbg_rf_addr_i,
+  input  logic        dbg_rf_we_i,
+  output logic [31:0] dbg_rf_rdata_o,
+  input  logic [11:0] dbg_csr_addr_i,
+  input  logic        dbg_csr_we_i,
+  output logic [31:0] dbg_csr_rdata_o,
+  output logic [31:0] dbg_pc_o,
+  input  logic        dbg_pc_we_i,
+  input  logic [31:0] dbg_wdata_i,
 
   // ---- RVFI trace port, active when RVFI == 1 ----
   output logic        rvfi_valid_o,
@@ -161,6 +180,8 @@ module e_core_top
     .instr_err_i    (instr_err_i),
     .redirect_i     (if_redirect),
     .redirect_pc_i  (if_redirect_pc),
+    .hold_i         ((halt_q & halt_req_i) | halt_taken),
+    .idle_o         (if_idle),
     .ifid_accept_i  (ifid_accept),
     .ifid_valid_o   (ifid_valid),
     .ifid_pc_o      (ifid_pc),
@@ -172,8 +193,37 @@ module e_core_top
   // branch is in S2 while the trapping instruction is in S3, one stage older.
   // Both the enable and the address have to be muxed: driving only the address
   // leaves a trap silently falling through to PC+4.
-  assign if_redirect    = trap_redirect | branch_redirect;
-  assign if_redirect_pc = trap_redirect ? trap_redirect_pc : id_branch_target;
+  assign if_redirect    = trap_redirect | branch_redirect | resume;
+  assign if_redirect_pc = resume        ? dpc_q :
+                          trap_redirect ? trap_redirect_pc : id_branch_target;
+
+  // --------------------------------------------------------------------
+  // Halt: taken by the trap unit like an interrupt; the core then fetches
+  // nothing until halt_req_i drops, and resumes at dpc_q.
+  // --------------------------------------------------------------------
+  logic        halt_taken, halt_q, if_idle, resume, dbg_en;
+  logic [31:0] dpc_q;
+
+  assign resume   = halt_q & ~halt_req_i;
+  assign halted_o = halt_q & if_idle & ~1'b0  /* S3 writes back as it commits */;
+  assign dbg_en   = halted_o;
+  assign dbg_pc_o = dpc_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      halt_q <= 1'b0;
+      dpc_q  <= RESET_VECTOR;
+    end else begin
+      if (halt_taken) begin
+        halt_q <= 1'b1;
+        dpc_q  <= trap_redirect_pc;           // the halted instruction
+      end else if (resume) begin
+        halt_q <= 1'b0;
+      end
+      if (dbg_en && dbg_pc_we_i) dpc_q <= dbg_wdata_i;
+    end
+  end
+
 
   // --------------------------------------------------------------------
   // S2: decode and register read
@@ -186,6 +236,11 @@ module e_core_top
     .fwd_rs1_i        (fwd_rs1),
     .fwd_rs2_i        (fwd_rs2),
     .ex_result_i      (ex_result),
+    .dbg_en_i     (dbg_en),
+    .dbg_addr_i   (dbg_rf_addr_i),
+    .dbg_we_i     (dbg_rf_we_i),
+    .dbg_wdata_i  (dbg_wdata_i),
+    .dbg_rdata_o  (dbg_rf_rdata_o),
     .rf_we_i          (rf_we),
     .rf_waddr_i       (rf_waddr),
     .rf_wdata_i       (rf_wdata),
@@ -245,7 +300,7 @@ module e_core_top
     .csr_addr_o         (csr_addr),
     .csr_wdata_o        (csr_wdata),
     .csr_commit_o       (csr_commit),
-    .trap_i             (trap_taken),
+    .trap_i             (trap_taken | halt_taken),   // neither retires
     .exc_instr_err_o        (exc_instr_err),
     .exc_illegal_o          (exc_illegal),
     .exc_ecall_o            (exc_ecall),
@@ -321,18 +376,19 @@ module e_core_top
   assign hpm_event[PERF_MEM]      = perf_mem;
 
   csr_unit #(
-    .HART_ID (HART_ID),
     .MISA    (MISA_VALUE),
     .NUM_HPM (NUM_PERF)
   ) u_csr (
     .clk_i           (clk_i),
     .rst_ni          (rst_ni),
-    .csr_en_i        (csr_en),
-    .csr_write_i     (csr_write),
-    .csr_op_i        (csr_op),
-    .csr_addr_i      (csr_addr),
-    .csr_wdata_i     (csr_wdata),
-    .csr_commit_i    (csr_commit),
+    .hart_id_i       (hart_id_i),
+    // While halted, the debug port owns the CSR port.
+    .csr_en_i        (dbg_en | csr_en),
+    .csr_write_i     (dbg_en ? dbg_csr_we_i : csr_write),
+    .csr_op_i        (dbg_en ? CSR_OP_RW : csr_op),
+    .csr_addr_i      (dbg_en ? dbg_csr_addr_i : csr_addr),
+    .csr_wdata_i     (dbg_en ? dbg_wdata_i : csr_wdata),
+    .csr_commit_i    (dbg_en ? dbg_csr_we_i : csr_commit),
     .csr_rdata_o     (csr_rdata),
     .csr_illegal_o   (csr_illegal),
     .trap_i          (trap_taken),
@@ -340,7 +396,7 @@ module e_core_top
     .trap_cause_i    (trap_cause),
     .trap_is_irq_i   (trap_is_irq),
     .trap_tval_i     (trap_tval),
-    .mret_i          (trap_redirect & ~trap_taken),
+    .mret_i          (trap_redirect & ~trap_taken & ~halt_taken),
     .mtvec_o         (mtvec),
     .mepc_o          (mepc),
     .mstatus_mie_o   (mstatus_mie),
@@ -383,8 +439,10 @@ module e_core_top
     .is_irq_o           (trap_is_irq),
     .tval_o             (trap_tval),
     .epc_o              (trap_epc),
+    .halt_req_i         (halt_req_i),
     .redirect_o         (trap_redirect),
-    .redirect_pc_o      (trap_redirect_pc)
+    .redirect_pc_o      (trap_redirect_pc),
+    .halt_o             (halt_taken)
   );
 
   // --------------------------------------------------------------------
@@ -394,6 +452,8 @@ module e_core_top
   logic        rvfi_event;
 
   assign rvfi_event = ex_retire | trap_taken;
+  assign retire_o   = ex_retire;
+  assign dbg_csr_rdata_o = csr_rdata;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin

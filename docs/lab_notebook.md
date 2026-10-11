@@ -1062,3 +1062,96 @@ Behind the full system with an SRAM stalled 4 cycles per access: fib 3.2×
 (P) and 2.3× (E) faster than the bare cores on an 8-cycle memory. All L2
 misses in the single-core C programs are first touches. L1I hit rates are
 99.4–99.99%.
+
+## 2026-10-15 (evening) — Phase 4: task migration and power management
+
+Plan §2.3 and Phase 7: the PMU (`rtl/power/pmu.sv`) migrates software
+contexts between the P-cores and the E-cores and manages power. Full write-up
+in `docs/power_migration.md`.
+
+### Decision: migrate through a debug port, not through memory
+
+The obvious software scheme -- save the registers to memory, wake the other
+core, restore -- needs an interrupt, a handler and cooperation from the
+program, and the plan's 100-cycle budget rules it out. Instead each core got
+a halt/debug port: the halt is taken by the trap unit like an interrupt (the
+instruction at the boundary is killed and becomes the resume PC), and while
+halted the register file's spare read port, its write port and the CSR port
+are switched to the debug port. The PMU copies 39 items out of one core and
+into the other, one per cycle: 84 cycles in all. Memory needs nothing --
+the caches are coherent, so the source core's dirty lines move on demand.
+
+`mhartid` became an input (the PMU drives it), so a hart keeps its number on
+whichever core runs it. The program can tell where it is only from `misa`.
+
+### Decision: slow cores, fast caches
+
+The DVFS stub divides only the cores' clocks. The L1s stay on the system
+clock -- they must answer snoops every cycle -- so they now take an access
+only in a cycle that ends with their core's clock edge, and hold a bus
+response that arrives in any other cycle. That broke the property the whole
+coherence verification rested on: the cycle a core sees `gnt` was the cycle
+the access took effect. A held load has already read its value and a snoop
+may since have invalidated the line, so the core-side handshake is no longer
+the memory-order point. Each L1 now has a performed-access monitor, and both
+checkers (unit and SoC) follow it; the unit harness additionally checks that
+every response arrives in an enabled cycle, after the monitor reported the
+access, with the data it reported.
+
+### Verilator and gated clocks
+
+Each core and each core's pair of L1s gets a latch-based clock gate. Verilator
+samples the pre-edge values correctly through the gate (checked before
+committing to the design), so the testbenches only had to learn that a core's
+RVFI outputs mean something only in cycles its clock is enabled.
+
+### Bug in my own test: `la` became gp-relative
+
+The migration self-test loads a signature into every register, gp included,
+then restores the stack pointer with `la`. The linker relaxed `la` into a
+gp-relative `addi`, and the hart trapped on the E-core -- after every
+register had already been verified across the move. The file now says
+`.option norelax`.
+
+### Test gap: the old "unmapped" address is the PMU now
+
+`trap_exceptions.S` used `0x4000_0000` as an address nothing decodes; the
+plan puts the power registers there. It uses `0x6000_0000` now.
+
+### Equivalent mutant: the P-core's write-back term in `halted_o`
+
+`halted_o` waited for an empty write-back stage. Mutation testing showed the
+term can never matter: the halt kills the instruction at the commit point, so
+by the time `halt_q` is set the write-back stage holds that killed
+instruction, which writes nothing. The term is gone, replaced by a
+simulation assertion that WB never writes while `halt_q` is set.
+
+### Halt mode in the single-core testbench
+
+`tb_core.cpp --halt-every=N` plays the PMU at random intervals: it halts the
+core, compares x1..x31, the PC and the travelling CSRs with the golden ISS,
+writes and reads back random values and restores them, then resumes. A
+program run that way must behave exactly as without the halts, so every
+directed test, half the random lockstep programs and a quarter of the
+coverage replay now also prove the halt path transparent.
+
+### Test gap found by mutation: the self-test set its registers too late
+
+A PMU that copied register k instead of k+1 (so x31 never moved) passed
+`mc_migrate`. The trace showed why: the self-test wrote the migration request
+first and loaded the signatures after, and the halt -- which lands a couple
+of instructions after the request's store completes -- came before the last
+`li`s. Those ran on the destination and rebuilt x31 there. The signatures now
+go in before the request; only the wait loop's register is unchecked, and a0
+(which carries the request) is checked against a saved copy.
+
+### Test gap found by mutation: nothing raced the flush
+
+A flush that writes back a line a snoop has already taken (stale data over
+the snooper's write) was killed by the unit harness and survived every
+program: in `mc_power` nobody touches the lines while the P cluster flushes.
+`mc_power_stress` has the E-cores store into 32 lines the P-cores left
+modified while the P cluster switches off. With both sweeps running upwards
+the flush simply outran the stores and they never met; with the E-cores
+sweeping downwards they meet head-on every round, and the mutant leaves a
+stale L2 line the checker reports at once.

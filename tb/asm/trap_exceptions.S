@@ -135,7 +135,7 @@ lw_site:
     CHECK_EQ_REG x15, x30, 24
 
     /* ---- 25: load access fault from an unmapped address, cause 5 -------- */
-    li      x17, 0x40000000         /* outside every mapped region */
+    li      x17, 0x60000000         /* outside every mapped region */
     lw      x18, 0(x17)
     lw      x19, SAVED_CAUSE(x2)
     CHECK_EQ x19, 5, 25
@@ -143,7 +143,7 @@ lw_site:
     CHECK_EQ_REG x20, x17, 26
 
     /* ---- 27: store access fault, cause 7 -------------------------------- */
-    li      x21, 0x40000000
+    li      x21, 0x60000000
     sw      x0, 0(x21)
     lw      x22, SAVED_CAUSE(x2)
     CHECK_EQ x22, 7, 27
@@ -168,7 +168,7 @@ jalr_site:
        faulting PC -- the target, not the jump -- and returning to it would
        fault again forever. The handler recognises cause 1 and redirects mepc
        to `recovered` instead of stepping over the instruction. */
-    li      x9, 0x40000000
+    li      x9, 0x60000000
     jalr    x10, 0(x9)
     CHECK_UNREACHABLE 31
 recovered:
@@ -176,7 +176,7 @@ recovered:
     lw      x11, SAVED_CAUSE(x2)
     CHECK_EQ x11, 1, 32
     lw      x12, SAVED_TVAL(x2)
-    li      x13, 0x40000000
+    li      x13, 0x60000000
     CHECK_EQ_REG x12, x13, 33
 
     /* the core must keep executing normally afterwards */

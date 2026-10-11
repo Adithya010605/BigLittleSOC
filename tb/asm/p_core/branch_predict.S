@@ -18,6 +18,11 @@
  *   * a 9-taken / 1-not-taken loop run 20 times mispredicts exactly 21
  *     times: one cold miss, then one per exit -- the 2-bit counter's
  *     hysteresis keeps each re-entry predicted taken.
+ *
+ * NO-HALT-MODE: this test checks exact predictor and event counter values. A halt kills the
+ * instruction at the boundary and re-executes it on resume, which the core's
+ * own counters (and predictor) rightly see, so the halt-mode run
+ * (run_asm.sh, "random:3+h") skips it.
  * ============================================================================
  */
 #include "test_macros.h"

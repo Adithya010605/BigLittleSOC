@@ -35,6 +35,13 @@
 //
 // Excluding memory instructions costs nothing: instructions keep flowing, so
 // the interrupt is simply taken on the next non-memory instruction instead.
+//
+// HALT (the power manager's halt request, rtl/power/pmu.sv) is taken exactly
+// like an interrupt -- at a non-memory instruction boundary, instead of the
+// instruction -- and before interrupts and exceptions, but it is not a trap:
+// no CSR changes, and the redirect is to the halted instruction itself, so
+// that it is the first to execute when the core resumes. The core top stops
+// fetching while halted (see halt_o).
 // ============================================================================
 
 module e_core_trap
@@ -64,6 +71,9 @@ module e_core_trap
   input  logic [31:0] mie_i,
   input  logic [31:0] mip_i,
 
+  // ---- halt request (power manager) ----
+  input  logic        halt_req_i,
+
   // ---- MRET ----
   input  logic        mret_i,
   input  logic [31:0] mepc_i,
@@ -75,8 +85,9 @@ module e_core_trap
   output logic        is_irq_o,
   output logic [31:0] tval_o,
   output logic [31:1] epc_o,
-  output logic        redirect_o,       // steer the PC (trap entry or MRET)
-  output logic [31:0] redirect_pc_o
+  output logic        redirect_o,       // steer the PC (trap entry, MRET, halt)
+  output logic [31:0] redirect_pc_o,
+  output logic        halt_o            // halt taken this cycle
 );
 
   // --------------------------------------------------------------------
@@ -153,10 +164,12 @@ module e_core_trap
   // otherwise complete, so an interrupt never lands in the middle of a
   // multi-cycle memory access.
   // --------------------------------------------------------------------
-  logic take_irq, take_exc;
+  logic take_irq, take_exc, take_halt;
 
-  assign take_irq = valid_i & commit_i & irq_any & ~mem_req_i;
-  assign take_exc = valid_i & exc_valid & ~take_irq;
+  assign take_halt = valid_i & commit_i & halt_req_i & ~mem_req_i;
+  assign take_irq  = valid_i & commit_i & irq_any & ~mem_req_i & ~take_halt;
+  assign take_exc  = valid_i & exc_valid & ~take_irq & ~take_halt;
+  assign halt_o    = take_halt;
 
   assign trap_o    = take_irq | take_exc;
   assign is_irq_o  = take_irq;
@@ -172,9 +185,9 @@ module e_core_trap
   // Redirect: trap entry, or MRET
   // --------------------------------------------------------------------
   logic take_mret;
-  assign take_mret = valid_i & commit_i & mret_i & ~trap_o;
+  assign take_mret = valid_i & commit_i & mret_i & ~trap_o & ~take_halt;
 
-  assign redirect_o    = trap_o | take_mret;
-  assign redirect_pc_o = trap_o ? mtvec_i : mepc_i;
+  assign redirect_o    = trap_o | take_mret | take_halt;
+  assign redirect_pc_o = take_halt ? pc_i : (trap_o ? mtvec_i : mepc_i);
 
 endmodule : e_core_trap

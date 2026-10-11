@@ -1,5 +1,5 @@
 // UNIT-TOP: coherent_mem
-// UNIT-RTL: rtl/cache/cache_pkg.sv rtl/cache/l1_dcache.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
+// UNIT-RTL: rtl/power/clock_gate.sv rtl/cache/cache_pkg.sv rtl/cache/l1_dcache.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
 // UNIT-VFLAGS: -GL2_SETS=4 -CFLAGS -DCOH_L2_SETS=4 -GWB_SETS=4 -GWT_SETS=4 -CFLAGS -DCOH_WB_SETS=4 -CFLAGS -DCOH_WT_SETS=4
 // ============================================================================
 // tb_coherent_mem_small.cpp — MSI coherence with 4-set caches.
@@ -26,5 +26,6 @@ int main(int argc, char** argv) {
   coh::RandomRun("small, 1-cycle memory", 22, false, 1, 300000, pool, 70);
   coh::RandomRun("small, 0-7 cycle memory", 23, true, 7, 400000, pool, 70);
   coh::RandomRun("small, wide pool, 0-3 cycles", 24, true, 3, 300000, wide, 50);
+  coh::RandomRun("small, slow cores + flushes", 25, true, 3, 400000, pool, 70, {4, 0, 2, 1}, 300);
   return tb::Report("coherent_mem_small");
 }
