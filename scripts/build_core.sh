@@ -12,6 +12,12 @@ VERILATOR=${VERILATOR:-verilator}
 # shellcheck source=scripts/core_config.sh
 . "$ROOT/scripts/core_config.sh"
 
+# CACHED=1: the core behind its L1 data cache, as a one-core SoC.
+if [ "$CACHED" = 1 ]; then
+  if [ "$CORE" = p_core ]; then np=1; ne=0; else np=0; ne=1; fi
+  exec "$ROOT/scripts/build_soc.sh" "$np" "$ne" "cached_${CORE}_sim" "$@"
+fi
+
 TRACE=0; COV=0; SUFFIX=""
 for a in "$@"; do
   case "$a" in

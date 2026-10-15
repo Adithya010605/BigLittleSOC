@@ -1,6 +1,8 @@
 # ============================================================================
 #  RISC-V SoC — Phases 0-2: E-Core (RV32I_Zicsr, 3-stage) and
 #                           P-Core (RV32IM_Zicsr, 5-stage, BHT + BTB)
+#               Phase 3/4:  MSI-coherent L1 data caches + snooping bus,
+#                           2P+2E big.LITTLE SoC
 #  Top-level build & regression Makefile.
 #
 #  Per-core targets act on the core named by CORE (default e_core):
@@ -22,7 +24,13 @@
 #    make synth        - Yosys area estimate, both cores
 #    make e-test       - the E-core's full gate
 #    make p-test       - the P-core's full gate
-#    make test         - lint + unit + both gates (ACCEPTANCE GATE)
+#    make soc          - build the 2P+2E big.LITTLE SoC simulator
+#    make soc-tests    - multi-core programs on the SoC (sw/soc_tests)
+#    make cached-tests - both cores' suites behind their L1 data caches
+#    make soc-mutation - verify the tests detect broken cache/coherence/
+#                        interconnect/peripheral RTL
+#    make soc-test     - the coherent SoC's full gate
+#    make test         - lint + unit + both gates + SoC gate (ACCEPTANCE GATE)
 #    make wave TEST=x  - rerun one test with tracing -> build/x.vcd
 #    make clean
 # ============================================================================
@@ -126,7 +134,7 @@ tools: ## Report toolchain state
 	@$(SCRIPTS)/check_tools.sh
 
 .PHONY: lint
-lint: ## Verilator lint of both cores (must be warning-free)
+lint: ## Verilator lint of both cores and the SoC (must be warning-free)
 	@env -u CORE $(SCRIPTS)/lint.sh
 
 # ---------------------------------------------------------------------------
@@ -210,14 +218,45 @@ p-test: ## The P-core's full gate
 	@$(MAKE) --no-print-directory CORE=p_core $(CORE_GATE)
 	@echo "  P-Core gate passed."
 
+.PHONY: soc
+soc: | $(BUILD) ## Build the 2P+2E big.LITTLE SoC simulator
+	@$(SCRIPTS)/build_soc.sh 2 2 soc_2p2e_sim
+
+.PHONY: soc-tests
+soc-tests: | $(BUILD) ## Multi-core programs on the 2P+2E SoC
+	@$(SCRIPTS)/run_soc.sh
+
+# Each core's directed, compliance, C and randomised-lockstep suites, rerun
+# with the core behind its L1 data cache (a one-core SoC; CACHED=1 in
+# scripts/core_config.sh).
+CACHED_GATE := asm-tests riscv-tests sw-tests random
+
+.PHONY: cached-tests
+cached-tests: ## Both cores' suites behind their L1 data caches
+	@$(MAKE) --no-print-directory CACHED=1 CORE=e_core $(CACHED_GATE)
+	@$(MAKE) --no-print-directory CACHED=1 CORE=p_core $(CACHED_GATE)
+
+.PHONY: soc-mutation
+soc-mutation: soc-tests ## Verify the tests detect broken memory-system RTL
+	@$(MAKE) --no-print-directory CACHED=1 CORE=p_core asm-tests > /dev/null
+	@$(PYTHON) -I -u $(SCRIPTS)/mutation_soc.py
+
+.PHONY: soc-test
+soc-test: ## The coherent SoC's full gate
+	@$(MAKE) --no-print-directory cached-tests
+	@$(MAKE) --no-print-directory soc-tests
+	@$(MAKE) --no-print-directory soc-mutation
+	@echo "  SoC gate passed."
+
 .PHONY: test
-test: lint unit ## ACCEPTANCE GATE: lint, unit, both cores' gates, benchmarks
+test: lint unit ## ACCEPTANCE GATE: lint, unit, both cores' gates, SoC, benchmarks
 	@$(MAKE) --no-print-directory e-test
 	@$(MAKE) --no-print-directory p-test
+	@$(MAKE) --no-print-directory soc-test
 	@$(MAKE) --no-print-directory bench
 	@echo
 	@echo "================================================"
-	@echo "  All E-Core and P-Core regressions passed."
+	@echo "  All E-Core, P-Core and SoC regressions passed."
 	@echo "================================================"
 
 .PHONY: clean
@@ -228,7 +267,7 @@ clean: ## Remove build products
 # Export discovered settings to the shell scripts.
 export ROOT RTL_DIR TB_DIR SW_DIR SCRIPTS BUILD THIRD
 export VERILATOR YOSYS PYTHON
-export CORE
+export CORE CACHED
 export RISCV_PREFIX RVCC RVOBJCOPY RVOBJDUMP RVNM
 export RVARCH RVABI RVCFLAGS RVLDFLAGS RVLIBS
 export RTL_PKG RTL_COMMON RTL_CORE RTL_ALL VINC VSIM_FLAGS

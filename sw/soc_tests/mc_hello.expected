@@ -1,0 +1,5 @@
+hart 0: P-core (RV32IM, 5-stage, write-back L1)
+hart 1: P-core (RV32IM, 5-stage, write-back L1)
+hart 2: E-core (RV32I, 3-stage, write-through L1)
+hart 3: E-core (RV32I, 3-stage, write-through L1)
+all harts up
