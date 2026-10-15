@@ -25,6 +25,12 @@
 // cores straight to it, and the coherence unit testbench drives it directly
 // with synthetic traffic.
 //
+// Power (rtl/power/pmu.sv): core c's two L1s run on their own gated clock
+// (l1_clk_en_i[c], off only while its power domain is off), take accesses
+// only in the cycles core_en_i[c] says end with a core clock edge, and are
+// flushed together by flush_i[c]. The performed-access monitors (perf_*)
+// report each access in the cycle it takes effect.
+//
 // The debug probe looks up one address in every L1 and in the L2 at once. It
 // has no effect on the design; the testbenches use it to check the protocol
 // invariants (single writer, inclusion, the snoop filter, data values).
@@ -46,6 +52,12 @@ module coherent_mem
 ) (
   input  logic                              clk_i,
   input  logic                              rst_ni,
+
+  // ---- Per core: clocks and flush ----
+  input  logic [NC-1:0]                     core_en_i,
+  input  logic [NC-1:0]                     l1_clk_en_i,
+  input  logic [NC-1:0]                     flush_i,
+  output logic [NC-1:0]                     flush_done_o,
 
   // ---- Core data ports ----
   input  logic [NC-1:0]                     core_req_i,
@@ -86,6 +98,15 @@ module coherent_mem
   output logic [NL1-1:0]                    dbg_l2_sharers_o,
   output logic [LINE_BITS-1:0]              dbg_l2_data_o,
 
+  // ---- Accesses as performed, per L1 (numbered like the debug probe) ----
+  output logic [NL1-1:0]                    perf_valid_o,
+  output logic [NL1-1:0][31:0]              perf_addr_o,
+  output logic [NL1-1:0]                    perf_we_o,
+  output logic [NL1-1:0][3:0]               perf_be_o,
+  output logic [NL1-1:0][31:0]              perf_wdata_o,
+  output logic [NL1-1:0][31:0]              perf_rdata_o,
+  output logic [NL1-1:0]                    perf_err_o,
+
   // ---- Statistics and bus monitor ----
   output logic [NL1-1:0][NUM_EV-1:0]        events_o,
   output logic [NUM_L2EV-1:0]               l2_events_o,
@@ -104,6 +125,7 @@ module coherent_mem
   logic [NL1-1:0]       l1_req, l1_we, l1_gnt, l1_rvalid, l1_err;
   logic [NL1-1:0][31:0] l1_addr, l1_wdata, l1_rdata;
   logic [NL1-1:0][3:0]  l1_be;
+  logic [NL1-1:0]       l1_fdone;
 
   for (genvar i = 0; i < int'(NC); i++) begin : g_ports
     assign l1_req[i]        = core_req_i[i];
@@ -125,7 +147,16 @@ module coherent_mem
     assign instr_rvalid_o[i] = l1_rvalid[NC+i];
     assign instr_rdata_o[i]  = l1_rdata[NC+i];
     assign instr_err_o[i]    = l1_err[NC+i];
+
+    assign flush_done_o[i]   = l1_fdone[i] & l1_fdone[NC+i];
   end
+
+  // Core c's L1s share one gated clock.
+  logic [NC-1:0] l1_clk;
+  for (genvar c = 0; c < int'(NC); c++) begin : g_l1_clk
+    clock_gate u_cg (.clk_i(clk_i), .en_i(l1_clk_en_i[c]), .clk_o(l1_clk[c]));
+  end
+
 
   // L1 <-> bus
   logic     [NL1-1:0]                 bus_req;
@@ -157,8 +188,9 @@ module coherent_mem
       .WRITE_BACK      (IS_P && IS_D),
       .CACHEABLE_LIMIT (CACHEABLE_LIMIT)
     ) u_l1 (
-      .clk_i          (clk_i),
+      .clk_i          (l1_clk[CORE]),
       .rst_ni         (rst_ni),
+      .core_en_i      (core_en_i[CORE]),
       .core_req_i     (l1_req[i]),
       .core_addr_i    (l1_addr[i]),
       .core_we_i      (l1_we[i]),
@@ -185,6 +217,15 @@ module coherent_mem
       .dbg_addr_i     (dbg_addr_i),
       .dbg_state_o    (dbg_state_o[i]),
       .dbg_data_o     (dbg_data_o[i]),
+      .perf_valid_o   (perf_valid_o[i]),
+      .perf_addr_o    (perf_addr_o[i]),
+      .perf_we_o      (perf_we_o[i]),
+      .perf_be_o      (perf_be_o[i]),
+      .perf_wdata_o   (perf_wdata_o[i]),
+      .perf_rdata_o   (perf_rdata_o[i]),
+      .perf_err_o     (perf_err_o[i]),
+      .flush_i        (flush_i[CORE]),
+      .flush_done_o   (l1_fdone[i]),
       .events_o       (events_o[i])
     );
   end

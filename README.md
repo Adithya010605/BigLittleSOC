@@ -3,8 +3,8 @@
 The two CPU cores of the big.LITTLE / UMA SoC described in
 `RISC-V_SoC_Project_Plan.md`, and the SoC built from them, written in
 SystemVerilog-2012 and verified with Verilator: Phases 0–2, the cache
-hierarchy with MSI coherence, and the QoS system interconnect. Task migration
-and power management come next.
+hierarchy with MSI coherence, the QoS system interconnect, and task migration
+with power management.
 
 * **E-core** — 3-stage, RV32I_Zicsr, static not-taken, small.
 * **P-core** — 5-stage, RV32IM_Zicsr_Zifencei, BHT + BTB branch prediction,
@@ -15,6 +15,11 @@ and power management come next.
   with a snoop filter, and a QoS crossbar to an RTL SRAM, UART, interrupt
   controller and system-control block. See
   [`docs/memory_system.md`](docs/memory_system.md).
+* **PMU** — task migration between the clusters (software-requested, or
+  automatic on IPC or a power budget; 84 cycles), per-hart sleep with
+  wake-on-interrupt, per-core clock gating, a per-cluster clock divider
+  (DVFS stub) and per-cluster power domains with L1 flush. See
+  [`docs/power_migration.md`](docs/power_migration.md).
 
 Both cores have identical external interfaces (two valid/ready memory ports,
 three interrupt pins, RVFI), share the ALU, register file, immediate generator,
@@ -26,16 +31,18 @@ per-core target; `CACHED=1` runs that core behind the whole memory system.
 
 | Property | Value |
 |---|---|
-| Harts | 0–1 P-cores, 2–3 E-cores (`mhartid`), one image for all |
+| Harts | 0–1 start on the P-cores, 2–3 on the E-cores (`mhartid`), one image for all; harts migrate between cores |
 | P-core L1I / L1D | 16 KB, 2-way, 32 B lines, LRU; L1D write-back / write-allocate, MSI |
 | E-core L1I / L1D | 8 KB, direct-mapped, 32 B lines; L1D write-through / no-write-allocate |
 | Instruction fetch | coherent with every core's stores (`FENCE.I` works behind the caches) |
 | L2 | 64 KB, 4-way, pseudo-LRU, write-back, inclusive; a sharer bit per L1 per line is the snoop filter; back-invalidation on eviction |
 | Coherence | MSI on an atomic snooping bus: BusRd, BusRdX (cache-to-cache), BusUpgr, write-through, writeback |
-| Interconnect | 4 × 4 crossbar, simplified AXI4-Lite, strict priority + round-robin + anti-starvation (16 cycles), QoS registers |
-| Slaves | SRAM 192 KB (1-cycle), UART, per-hart interrupt controller, system control (QoS, performance counters) |
+| Interconnect | 4 × 6 crossbar, simplified AXI4-Lite, strict priority + round-robin + anti-starvation (16 cycles), QoS registers |
+| Slaves | SRAM 192 KB (1-cycle), UART, per-hart interrupt controller, system control (QoS, performance counters), PMU (power, migration) |
+| Migration | 39 items (x1–x31, pc, 7 CSRs) through the cores' halt/debug ports, 84 cycles; triggers: software, IPC monitor with hysteresis, P-core power budget |
+| Power | clock gating per core and per core's L1s, sleep / wake-on-interrupt, 1/1–1/2–1/4 divider per cluster, cluster power-off with L1 flush |
 | Memory model | sequentially consistent (each access performed at acknowledgement) |
-| Verification | 111M unit checks; every load checked against the coherent value in every SoC run; 32/32 mutations killed |
+| Verification | every load checked against the coherent value in every SoC run, at every core speed; halted state checked against the golden ISS at random halts; 50/50 SoC mutations detected |
 
 ## P-core at a glance
 
@@ -73,11 +80,12 @@ Full details: [`docs/e_core_microarchitecture.md`](docs/e_core_microarchitecture
 
 | Gate | Result |
 |---|---|
-| Unit: coherence (`tb_coherent_mem`, `_small`, `_wb4`) | every MSI transition, both waiting-request races, L2 inclusion and back-invalidation, snoop filter, instruction-cache coherence; random traffic on all 8 ports; ~108M checks |
+| Unit: coherence (`tb_coherent_mem`, `_small`, `_wb4`) | every MSI transition, both waiting-request races, L2 inclusion and back-invalidation, snoop filter, instruction-cache coherence, flush, slow cores; random traffic on all 8 ports, also with cores at 1/2, 1/4 and random speed and flushes mid-traffic |
 | Unit: interconnect (`tb_qos_xbar`) | every grant against a reference arbiter (priority, round-robin, anti-starvation, no dead cycles), routing, data, decode errors; 3.5M checks |
 | Each core behind the whole system (`make cached-tests`) | directed (incl. `fence_i`), `riscv-tests`, C programs, 600 × 2 random lockstep: all pass, same as the bare cores |
-| Multi-core programs (`make soc-tests`) | 13 programs × 6 settings (5 SRAM latencies + checked background traffic) |
-| Mutation (`make soc-mutation`) | 32 / 32 killed: caches, coherence, L2, interconnect, peripherals |
+| Multi-core programs (`make soc-tests`) | 20 programs × 6 settings (5 SRAM latencies + checked background traffic), including migration, sleep/wake, DVFS, power domains and automatic migration |
+| Halt/debug port (both cores, `--halt-every`) | directed suites, half the random lockstep programs and a quarter of the coverage replay run with random halts: halted state = golden ISS, debug writes read back; 100% line coverage kept |
+| Mutation (`make soc-mutation`) | 50 / 50 detected: caches, coherence, L2, interconnect, peripherals, slow-core hold and flush, PMU and migration |
 
 
 ### P-core
@@ -173,7 +181,7 @@ make CORE=p_core asm-tests riscv-tests sw-tests
 make soc            # build the 2P+2E SoC simulator (build/soc_2p2e_sim)
 make soc-tests      # multi-core programs on it
 make cached-tests   # every core suite again, behind the whole memory system
-make soc-mutation   # mutation testing of caches, coherence, interconnect, peripherals
+make soc-mutation   # mutation testing of caches, coherence, interconnect, peripherals, PMU
 make soc-test       # all three: the SoC's gate (part of `make test`)
 ```
 

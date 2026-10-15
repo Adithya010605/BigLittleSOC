@@ -10,7 +10,10 @@
 // Each hart also owns one word per line that only it writes, and checks that
 // it always reads back its own last write -- program order on one hart.
 //
-// SEED (from the build) varies the access pattern.
+// SEED (from the build) varies the access pattern. STRESS_DVFS, if defined, is
+// written to the PMU's divider register by hart 0 first: the same races with
+// the clusters' cores running at different speeds.
+#include "pmu.h"
 #include "soc.h"
 
 #ifndef SEED
@@ -30,6 +33,9 @@ static volatile uint32_t* addr_of(int tag, int set, int word) {
 }
 
 int main(int h) {
+#ifdef STRESS_DVFS
+  if (h == 0) PWR_DVFS = STRESS_DVFS;
+#endif
   uint32_t s = 0x9E3779B9u * (uint32_t)(SEED * 31 + h + 1);
   uint32_t mine[TAGS][SETS] = {{0}};
   for (int i = 0; i < OPS; ++i) {

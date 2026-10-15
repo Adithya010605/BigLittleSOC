@@ -26,6 +26,13 @@ module p_core_id_stage
   input  logic [REG_ADDR_W-1:0] rf_waddr_i,
   input  logic [31:0]           rf_wdata_i,
 
+  // ---- debug access while the core is halted (pipeline empty) ----
+  input  logic                  dbg_en_i,
+  input  logic [REG_ADDR_W-1:0] dbg_addr_i,
+  input  logic                  dbg_we_i,
+  input  logic [31:0]           dbg_wdata_i,
+  output logic [31:0]           dbg_rdata_o,
+
   // ---- decoded instruction ----
   output logic [REG_ADDR_W-1:0] rs1_addr_o,
   output logic [REG_ADDR_W-1:0] rs2_addr_o,
@@ -140,16 +147,19 @@ module p_core_id_stage
   // Register file. Write-first, so a register written by WB this cycle is
   // read with its new value.
   // --------------------------------------------------------------------
+  // While the core is halted nothing is decoded or written back, so the
+  // debug port borrows read port B and the write port.
   regfile u_regfile (
     .clk_i     (clk_i),
     .raddr_a_i (rs1_addr_o),
     .rdata_a_o (rs1_data_o),
-    .raddr_b_i (rs2_addr_o),
+    .raddr_b_i (dbg_en_i ? dbg_addr_i : rs2_addr_o),
     .rdata_b_o (rs2_data_o),
-    .we_i      (rf_we_i),
-    .waddr_i   (rf_waddr_i),
-    .wdata_i   (rf_wdata_i)
+    .we_i      (dbg_en_i ? dbg_we_i : rf_we_i),
+    .waddr_i   (dbg_en_i ? dbg_addr_i : rf_waddr_i),
+    .wdata_i   (dbg_en_i ? dbg_wdata_i : rf_wdata_i)
   );
+  assign dbg_rdata_o = rs2_data_o;
 
   // br_op is instr[14:12] and the CSR address is instr[31:20]; EX takes both
   // straight from the instruction word it carries, so the decoded copies are

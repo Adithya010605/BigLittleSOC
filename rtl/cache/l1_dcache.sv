@@ -60,6 +60,28 @@
 // Both decisions are re-made every cycle from the current state, and the bus
 // only grants while no snoop is in progress, so the command it latches is
 // always consistent with the state of the cache at that moment.
+//
+// ---------------------------------------------------------------------------
+// SLOW CORES, THE PERFORMED-ACCESS MONITOR, AND FLUSH (rtl/power/pmu.sv)
+// ---------------------------------------------------------------------------
+// The cache always runs on the system clock, but its core may not: the PMU
+// can run a cluster's cores at 1/2 or 1/4 speed, or stop one. core_en_i is
+// high in the cycles that end with a core clock edge, the only cycles in
+// which the core can see a response. The cache therefore takes a new access
+// only when core_en_i is high, and a bus transaction that completes when it
+// is low has its response held (C_HOLD) until the next one.
+//
+// A held access has already taken effect -- a snoop may even have taken the
+// line away again -- so the cycle the core sees gnt is no longer always the
+// cycle the access was performed. The perf_* outputs report each access in
+// the cycle it is performed, with the data it read; that is what the
+// testbenches' coherence checkers follow. At full speed the two coincide.
+//
+// flush_i (held until flush_done_o) walks every line: a modified line is
+// written back (BUS_WB), everything is invalidated. Snoops are still
+// answered during the walk. The PMU only flushes the caches of halted cores,
+// before switching their power domain off; flush_done_o stays high, and the
+// cache idle, until flush_i is released.
 // ============================================================================
 
 module l1_dcache
@@ -72,6 +94,7 @@ module l1_dcache
 ) (
   input  logic                  clk_i,
   input  logic                  rst_ni,
+  input  logic                  core_en_i,        // this cycle ends with a core clock edge
 
   // ---- Core data port ----
   input  logic                  core_req_i,
@@ -106,6 +129,19 @@ module l1_dcache
   input  logic [31:0]           dbg_addr_i,
   output msi_e                  dbg_state_o,
   output logic [LINE_BITS-1:0]  dbg_data_o,
+
+  // ---- Performed-access monitor: one pulse per access, as it takes effect ----
+  output logic                  perf_valid_o,
+  output logic [31:0]           perf_addr_o,
+  output logic                  perf_we_o,
+  output logic [3:0]            perf_be_o,
+  output logic [31:0]           perf_wdata_o,
+  output logic [31:0]           perf_rdata_o,
+  output logic                  perf_err_o,
+
+  // ---- Flush (power-down) ----
+  input  logic                  flush_i,
+  output logic                  flush_done_o,
 
   // ---- Event pulses (cache_pkg::EV_*) ----
   output logic [NUM_EV-1:0]     events_o
@@ -233,12 +269,16 @@ module l1_dcache
   // ====================================================================
   // Request register: the access being worked on while the core waits.
   // ====================================================================
-  typedef enum logic [2:0] {
-    C_IDLE,   // serving hits; a miss leaves for one of the states below
-    C_WB,     // writing back the modified victim (BUS_WB)
-    C_FILL,   // BUS_RD / BUS_RDX / BUS_UPGR for the requested line
-    C_WT,     // write-through store (BUS_WR)
-    C_UNC     // uncached access (BUS_UNC_RD / BUS_UNC_WR)
+  typedef enum logic [3:0] {
+    C_IDLE,    // serving hits; a miss leaves for one of the states below
+    C_WB,      // writing back the modified victim (BUS_WB)
+    C_FILL,    // BUS_RD / BUS_RDX / BUS_UPGR for the requested line
+    C_WT,      // write-through store (BUS_WR)
+    C_UNC,     // uncached access (BUS_UNC_RD / BUS_UNC_WR)
+    C_HOLD,    // access performed; response waits for the core's clock
+    C_FLUSH,   // flush walk: invalidate line {fl_idx, fl_way}, or...
+    C_FWB,     // ...write it back first (BUS_WB)
+    C_FLUSHED  // flush complete, until flush_i is released
   } cstate_e;
 
   cstate_e     cs_q, cs_d;
@@ -248,6 +288,18 @@ module l1_dcache
   logic [31:0] rq_wdata_q;
   way_t        fill_way_q, fill_way_d;
   logic        accept;
+
+  // Held response (C_HOLD)
+  logic        hold_set;
+  logic [31:0] hold_rdata_q, hold_rdata_d;
+  logic        hold_err_q, hold_err_d;
+
+  // Flush walk position
+  idx_t        fl_idx_q;
+  way_t        fl_way_q;
+  logic        fl_step;      // advance to the next line
+  logic        fl_last;
+  assign fl_last = fl_idx_q == idx_t'(SETS - 1) && int'(fl_way_q) == int'(WAYS) - 1;
 
   idx_t                  rq_idx;
   tag_t                  rq_tag;
@@ -291,10 +343,27 @@ module l1_dcache
   logic [LINE_BITS-1:0] wr_data;
   logic [LINE_BITS-1:0] fill_line;
 
+  // A bus transaction has completed the access: respond, or hold.
+  logic                 done_resp;
+  logic [31:0]          resp_rdata;
+  logic                 resp_err;
+  logic                 hit_resp;     // a hit answered in C_IDLE
+  logic                 fl_clear;
+
   always_comb begin
     cs_d          = cs_q;
     fill_way_d    = fill_way_q;
     accept        = 1'b0;
+    done_resp     = 1'b0;
+    resp_rdata    = '0;
+    resp_err      = 1'b0;
+    hit_resp      = 1'b0;
+    hold_set      = 1'b0;
+    hold_rdata_d  = hold_rdata_q;
+    hold_err_d    = hold_err_q;
+    fl_step       = 1'b0;
+    fl_clear      = 1'b0;
+    flush_done_o  = 1'b0;
 
     core_gnt_o    = 1'b0;
     core_rvalid_o = 1'b0;
@@ -325,7 +394,10 @@ module l1_dcache
     unique case (cs_q)
       // ------------------------------------------------------------------
       C_IDLE: begin
-        if (core_req_i && !snoop_valid_i) begin
+        if (flush_i) begin
+          cs_d     = C_FLUSH;
+          fl_clear = 1'b1;
+        end else if (core_req_i && core_en_i && !snoop_valid_i) begin
           if (!c_cacheable) begin
             accept = 1'b1;
             cs_d   = C_UNC;
@@ -333,6 +405,7 @@ module l1_dcache
           end else if (!core_we_i) begin
             if (c_hit) begin
               // Load hit: answered now.
+              hit_resp      = 1'b1;
               core_gnt_o    = 1'b1;
               core_rvalid_o = 1'b1;
               core_rdata_o  = line_word(data_q[c_way][c_idx], `L1_SLOT(core_addr_i));
@@ -349,6 +422,7 @@ module l1_dcache
           end else if (WRITE_BACK) begin
             if (c_hit && state_q[c_way][c_idx] == MSI_M) begin
               // Store hit on a modified line: done in the cache.
+              hit_resp      = 1'b1;
               core_gnt_o    = 1'b1;
               core_rvalid_o = 1'b1;
               dt_we   = 1'b1;
@@ -413,11 +487,10 @@ module l1_dcache
         if (bus_done_i) begin
           // An upgrade keeps the data it already has; anything else takes
           // the line the bus delivered.
-          fill_line     = fill_upgrade ? data_q[fill_way_q][rq_idx] : bus_rdata_i;
-          core_gnt_o    = 1'b1;
-          core_rvalid_o = 1'b1;
-          core_err_o    = bus_err_i;
-          core_rdata_o  = line_word(fill_line, rq_slot);
+          fill_line  = fill_upgrade ? data_q[fill_way_q][rq_idx] : bus_rdata_i;
+          done_resp  = 1'b1;
+          resp_err   = bus_err_i;
+          resp_rdata = line_word(fill_line, rq_slot);
           if (!bus_err_i) begin
             st_we    = 1'b1;
             dt_we    = 1'b1;
@@ -444,9 +517,8 @@ module l1_dcache
         bus_wdata_o = word_to_line(rq_wdata_q);
         bus_be_o    = word_be(rq_be_q, rq_slot);
         if (bus_done_i) begin
-          core_gnt_o    = 1'b1;
-          core_rvalid_o = 1'b1;
-          core_err_o    = bus_err_i;
+          done_resp = 1'b1;
+          resp_err  = bus_err_i;
           if (!bus_err_i && r_hit) begin
             // Keep this cache's own copy current. It stays S: memory was
             // written in the same transaction.
@@ -468,17 +540,102 @@ module l1_dcache
         bus_wdata_o = word_to_line(rq_wdata_q);
         bus_be_o    = word_be(rq_be_q, rq_slot);
         if (bus_done_i) begin
+          done_resp  = 1'b1;
+          resp_err   = bus_err_i;
+          resp_rdata = line_word(bus_rdata_i, rq_slot);
+          cs_d       = C_IDLE;
+        end
+      end
+
+      // ------------------------------------------------------------------
+      C_HOLD: begin
+        if (core_en_i) begin
           core_gnt_o    = 1'b1;
           core_rvalid_o = 1'b1;
-          core_err_o    = bus_err_i;
-          core_rdata_o  = line_word(bus_rdata_i, rq_slot);
+          core_rdata_o  = hold_rdata_q;
+          core_err_o    = hold_err_q;
           cs_d          = C_IDLE;
         end
       end
 
+      // ------------------------------------------------------------------
+      // Flush walk. Lines are only written outside snoop cycles, so the
+      // snoop's own state update never collides with the walk's.
+      C_FLUSH: begin
+        if (!flush_i) begin
+          cs_d = C_IDLE;                        // abandoned
+        end else if (!snoop_valid_i) begin
+          if (WRITE_BACK && state_q[fl_way_q][fl_idx_q] == MSI_M) begin
+            cs_d = C_FWB;
+          end else begin
+            st_we    = state_q[fl_way_q][fl_idx_q] != MSI_I;
+            wr_way   = fl_way_q;
+            wr_idx   = fl_idx_q;
+            wr_tag   = tag_q[fl_way_q][fl_idx_q];
+            wr_state = MSI_I;
+            fl_step  = 1'b1;
+            if (fl_last) cs_d = C_FLUSHED;
+          end
+        end
+      end
+
+      C_FWB: begin
+        if (state_q[fl_way_q][fl_idx_q] != MSI_M) begin
+          // A snoop took the line while the writeback waited for the bus.
+          cs_d = C_FLUSH;
+        end else begin
+          bus_req_o   = 1'b1;
+          bus_cmd_o   = BUS_WB;
+          bus_addr_o  = {tag_q[fl_way_q][fl_idx_q], fl_idx_q, OFFSET_W'(0)};
+          bus_wdata_o = data_q[fl_way_q][fl_idx_q];
+          bus_be_o    = '1;
+          if (bus_done_i) begin
+            st_we    = 1'b1;
+            wr_way   = fl_way_q;
+            wr_idx   = fl_idx_q;
+            wr_tag   = tag_q[fl_way_q][fl_idx_q];
+            wr_state = MSI_I;
+            fl_step  = 1'b1;
+            cs_d     = fl_last ? C_FLUSHED : C_FLUSH;
+            fsm_events[EV_WRITEBACK] = 1'b1;
+          end
+        end
+      end
+
+      C_FLUSHED: begin
+        flush_done_o = flush_i;
+        if (!flush_i) cs_d = C_IDLE;
+      end
+
       default: cs_d = C_IDLE;
     endcase
+
+    // A completed access is answered now if the core can see it, and held
+    // for the core's next clock edge if not.
+    if (done_resp) begin
+      if (core_en_i) begin
+        core_gnt_o    = 1'b1;
+        core_rvalid_o = 1'b1;
+        core_rdata_o  = resp_rdata;
+        core_err_o    = resp_err;
+      end else begin
+        hold_set     = 1'b1;
+        hold_rdata_d = resp_rdata;
+        hold_err_d   = resp_err;
+        cs_d         = C_HOLD;
+      end
+    end
   end
+
+  // Performed-access monitor: a hit in its request cycle, anything else in
+  // the cycle its bus transaction completes.
+  assign perf_valid_o = hit_resp || done_resp;
+  assign perf_addr_o  = hit_resp ? core_addr_i  : rq_addr_q;
+  assign perf_we_o    = hit_resp ? core_we_i    : rq_we_q;
+  assign perf_be_o    = hit_resp ? core_be_i    : rq_be_q;
+  assign perf_wdata_o = hit_resp ? core_wdata_i : rq_wdata_q;
+  assign perf_rdata_o = hit_resp ? core_rdata_o : resp_rdata;
+  assign perf_err_o   = !hit_resp && resp_err;
 
   // ====================================================================
   // Snoop state change
@@ -519,6 +676,10 @@ module l1_dcache
       rq_we_q    <= 1'b0;
       rq_be_q    <= '0;
       rq_wdata_q <= '0;
+      hold_rdata_q <= '0;
+      hold_err_q   <= 1'b0;
+      fl_idx_q     <= '0;
+      fl_way_q     <= '0;
       for (int w = 0; w < int'(WAYS); w++) begin
         for (int s = 0; s < int'(SETS); s++) state_q[w][s] <= MSI_I;
       end
@@ -530,6 +691,21 @@ module l1_dcache
         rq_we_q    <= core_we_i;
         rq_be_q    <= core_be_i;
         rq_wdata_q <= core_wdata_i;
+      end
+      if (hold_set) begin
+        hold_rdata_q <= hold_rdata_d;
+        hold_err_q   <= hold_err_d;
+      end
+      if (fl_clear) begin
+        fl_idx_q <= '0;
+        fl_way_q <= '0;
+      end else if (fl_step) begin
+        if (int'(fl_way_q) == int'(WAYS) - 1) begin
+          fl_way_q <= '0;
+          fl_idx_q <= fl_idx_q + idx_t'(1);
+        end else begin
+          fl_way_q <= fl_way_q + way_t'(1);
+        end
       end
       if (st_we)   state_q[wr_way][wr_idx] <= wr_state;
       if (snp_upd) state_q[s_way][s_idx]   <= snp_next;
@@ -553,6 +729,9 @@ module l1_dcache
         else $error("l1_dcache: snooped in the cycle its own transaction completed");
       assert (!(snp_upd && (st_we || dt_we)))
         else $error("l1_dcache: snoop and core updated the arrays in one cycle");
+      // The PMU flushes only the caches of halted cores.
+      assert (!(cs_q == C_IDLE && flush_i && core_req_i))
+        else $error("l1_dcache: flush requested with a core access pending");
       // A write-through cache never owns a line.
       if (!WRITE_BACK) begin
         assert (!(st_we && wr_state == MSI_M))

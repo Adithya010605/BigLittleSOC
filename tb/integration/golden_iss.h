@@ -72,6 +72,11 @@ class GoldenIss {
 
   uint32_t pc() const { return pc_; }
   uint32_t reg(int i) const { return (i == 0) ? 0u : x_[i]; }
+  // A CSR as an instruction would read it (0 for one that does not exist).
+  uint32_t csr(uint32_t addr) const {
+    bool illegal = false;
+    return CsrRead(addr, &illegal);
+  }
 
   // Adopts a value the reference cannot predict (a read of mcycle, minstret,
   // a performance counter or mip). Skipping the comparison alone is not
