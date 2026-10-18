@@ -3,15 +3,12 @@
 A RISC-V big.LITTLE / Unified-Memory SoC, built from scratch in SystemVerilog and
 verified with Verilator.
 
-This repository currently contains **Phase 0 and Phase 1 of the project: the
-E-Core** — a complete, compliance-passing, 100%-line-covered RV32I_Zicsr
-processor — together with the full multi-phase plan for the SoC that gets built
-around it.
-
-> **Phase 2, the P-Core, is done and lives on the
-> [`docs/p-core-presentation`](https://github.com/Adithya010605/BigLittleSOC/tree/docs/p-core-presentation) branch**,
-> not on `main` yet. See [§1.1](#11-phase-2-the-p-core-on-branch-docsp-core-presentation)
-> for what it is and how it compares with the E-Core.
+This repository currently contains **Phases 0–2 of the project: the two CPU
+cores** — the **E-Core**, a complete, compliance-passing, 100%-line-covered
+RV32I_Zicsr processor, and the **P-Core**, a 5-stage RV32IM core with branch
+prediction — together with the full multi-phase plan for the SoC that gets
+built around them. See [§1.1](#11-phase-2-the-p-core) for the P-Core and how it
+compares with the E-Core.
 
 The design target is a heterogeneous SoC in the shape of real Apple-Silicon-class
 parts: a small efficiency core and a wide performance core sharing one coherent
@@ -33,10 +30,9 @@ memory, and a task-migration controller moving work between the cores.
 9. [Programming model and memory map](#9-programming-model-and-memory-map)
 10. [Design decisions worth knowing](#10-design-decisions-worth-knowing)
 11. [Documentation index](#11-documentation-index)
-12. [Presentation](#12-presentation)
-13. [Working on this as a team](#13-working-on-this-as-a-team)
-14. [Roadmap](#14-roadmap)
-15. [Troubleshooting](#15-troubleshooting)
+12. [Working on this as a team](#12-working-on-this-as-a-team)
+13. [Roadmap](#13-roadmap)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -49,15 +45,15 @@ The short version of the build order, and where we are in it:
 |---|---|---|
 | 0 | Repo skeleton, build system, toolchain checks | **Done** |
 | 1 | **E-Core** — RV32I + Zicsr, 3-stage, machine mode | **Done, verified, synthesised** |
-| 2 | **P-Core** — RV32IM, 5-stage, branch prediction | **Done, verified, synthesised** — on branch `docs/p-core-presentation` |
+| 2 | **P-Core** — RV32IM, 5-stage, branch prediction | **Done, verified, synthesised** |
 | 3 | UMA interconnect fabric (QoS NoC) | Not started |
 | 4 | Cache hierarchy + coherence | Not started |
 | 5 | ML accelerator + DMA | Not started |
 | 6 | Task migration controller + power management | Not started |
 | 7 | Integration, system verification, FPGA bring-up | Not started |
 
-Everything in `rtl/`, `tb/`, `sw/`, `scripts/` and `syn/` on `main` is the
-E-Core. **The P-Core source is on the `docs/p-core-presentation` branch** (see
+`rtl/`, `tb/`, `sw/`, `scripts/` and `syn/` hold both cores: shared modules in
+`rtl/common/`, the E-Core in `rtl/e_core/` and the P-Core in `rtl/p_core/` (see
 §1.1). The caches, interconnect and accelerator are not written yet; that is
 the next chunk of work, and it is what the plan document is for.
 
@@ -66,23 +62,19 @@ runs 1,200 randomised programs in lockstep against a golden instruction-set
 simulator, survives mutation testing, hits 100% line coverage, and synthesises
 to 2,273 LUTs. The numbers in section 8 are all reproducible with `make test`.
 
-### 1.1 Phase 2: the P-Core (on branch `docs/p-core-presentation`)
+### 1.1 Phase 2: the P-Core
 
-The P-Core is the "big" core of the big.LITTLE pair. Its code is **not on
-`main` yet**; it is on the `docs/p-core-presentation` branch:
+The P-Core is the "big" core of the big.LITTLE pair:
 
 ```sh
-git fetch origin
-git checkout docs/p-core-presentation
 make CORE=p_core p-test     # the P-Core's full gate
 make test                   # both cores' gates + the E/P benchmark comparison
 ```
 
-On that branch, `rtl/p_core/` holds the P-Core RTL, `tb/asm/p_core/` and
-`tb/unit/p_core/` its tests, and `docs/p_core_*.md` its microarchitecture,
-verification plan and results. `docs/p_core_panel_presentation.md` has every
-feature, every result and the full E-Core/P-Core comparison. Every regression
-script takes `CORE=e_core|p_core`.
+`rtl/p_core/` holds the P-Core RTL, `tb/asm/p_core/` and `tb/unit/p_core/` its
+tests, and `docs/p_core_*.md` its microarchitecture, verification plan and
+results. Every regression script takes `CORE=e_core|p_core` (default
+`e_core`).
 
 **P-Core at a glance**
 
@@ -145,7 +137,7 @@ cycles ÷ P-Core cycles.
   not measured yet for either core (no place-and-route tool); it is the open
   question for FPGA bring-up.
 
-To reproduce the program comparison on the branch:
+To reproduce the program comparison:
 
 ```sh
 make sw-tests && make CORE=p_core sw-tests   # build and run the C programs on both cores
@@ -201,21 +193,21 @@ BigLittleSOC/
 │
 ├── rtl/
 │   ├── common/                      ALU, regfile, imm gen, decoder, CSR unit, LSU, shared package
-│   └── e_core/                      pipeline stages, hazard unit, trap unit, top level
+│   ├── e_core/                      E-Core pipeline stages, hazard unit, trap unit, top level
+│   └── p_core/                      P-Core pipeline stages, predictor, multiplier, divider, hazard unit, top
 │
 ├── tb/
-│   ├── unit/                        one C++ Verilator harness per rtl/common module
+│   ├── unit/                        one C++ Verilator harness per rtl/common module (p_core/: per P-Core module)
 │   ├── integration/                 core harness, memory model, ELF loader, golden ISS, disassembler
-│   └── asm/                         hand-written self-checking assembly tests
+│   └── asm/                         hand-written self-checking assembly tests (p_core/: P-Core only)
 │
 ├── sw/
 │   ├── common/                      startup code (crt0, start.S), linker scripts, UART driver
 │   └── tests/                       C benchmark programs + expected output
 │
 ├── scripts/                         build and regression drivers called by the Makefile
-├── syn/                             Yosys synthesis script
-├── docs/                            microarchitecture, verification plan, results, lab notebook
-└── presentation/                    slide decks + the script that generates them
+├── syn/                             Yosys synthesis scripts, one per core
+└── docs/                            microarchitecture, verification plan, results, lab notebook, test logs
 ```
 
 Two directories are created on demand and are **not** in git:
@@ -237,7 +229,6 @@ Two directories are created on demand and are **not** in git:
 | yosys | 0.3x+ | `make synth` only |
 | sv2v | any | `make synth` only — fetched automatically into `build/tools/` if absent, no root needed |
 | gtkwave | — | viewing `make wave` output only |
-| python-pptx | — | regenerating the slide deck only |
 
 Verilator 4.x will **not** work; the testbenches use 5.x APIs.
 
@@ -313,18 +304,20 @@ RANDOM_NPROG=20 RANDOM_NSEED=1 make random
 | `make tools` | report toolchain state and detected cross compiler |
 | `make lint` | `verilator --lint-only -Wall` over all of `rtl/` — must be silent |
 | `make unit` | build + run every unit testbench in `tb/unit/` |
-| `make e_core` | build the Verilator integration simulator only |
+| `make e_core` / `make p_core` | build that core's Verilator integration simulator only |
 | `make asm-tests` | run the directed assembly tests in `tb/asm/`, at 4 memory latencies each |
 | `make sw-tests` | compile and run the C programs in `sw/tests/`, diff against `.expected` |
 | `make riscv-tests` | run the official `rv32ui-p` compliance suite |
 | `make random` | randomised lockstep against the golden ISS |
 | `make mutation` | inject faults into the RTL, prove the tests catch them |
 | `make coverage` | coverage build + line/toggle report |
-| `make synth` | Yosys area estimate (fetches `sv2v` if needed) |
+| `make bench` | C programs on both cores + the E-Core vs P-Core comparison table |
+| `make synth` | Yosys area estimate, both cores (fetches `sv2v` if needed) |
 | `make wave TEST=<name>` | rerun one test with tracing → `build/<name>.vcd` |
 | `make riscv-tests-fetch` | clone `third_party/riscv-tests` |
 | `make clean` | remove `build/` |
-| `make test` | **the acceptance gate** — everything above that matters |
+| `make e-test` / `make p-test` | one core's full gate |
+| `make test` | **the acceptance gate** — everything above that matters, both cores |
 
 ### Knobs
 
@@ -332,6 +325,7 @@ These are environment variables; pass them on the `make` line.
 
 | Variable | Default | Effect |
 |---|---|---|
+| `CORE` | `e_core` | which core per-core targets build and test (`e_core` or `p_core`) |
 | `RISCV_PREFIX` | auto-detected | cross-compiler prefix |
 | `VERILATOR` / `YOSYS` / `PYTHON` | `verilator` / `yosys` / `python3` | tool binaries |
 | `RANDOM_NPROG` | `200` | random programs generated for lockstep |
@@ -356,16 +350,7 @@ gtkwave build/hazard_load_use.vcd
 
 `make wave` also writes `build/<name>.trace.log` — a human-readable list of every
 instruction that executed, with its cycle number. For showing pipeline behaviour
-to an audience that is a far better prop than the waveform;
-[`docs/DEMO_AND_EXPLAINER.md`](docs/DEMO_AND_EXPLAINER.md) §4 walks through it.
-
-### Regenerating the slide deck
-
-```sh
-pip install python-pptx
-python3 presentation/generate_a1_ppt.py                 # writes next to the script
-python3 presentation/generate_a1_ppt.py /path/out.pptx  # or wherever you want it
-```
+to an audience that is a far better prop than the waveform.
 
 ---
 
@@ -557,11 +542,6 @@ because they are the ones that will surprise you when reading the RTL:
 
 ## 11. Documentation index
 
-**If you have to present or explain this project and you did not design it,
-start with [`docs/DEMO_AND_EXPLAINER.md`](docs/DEMO_AND_EXPLAINER.md)** — the
-pipeline explained from zero, a scripted demo, the questions you will be asked,
-and a numbers cheat sheet.
-
 **For the technical detail:** [`docs/E_CORE_REFERENCE.md`](docs/E_CORE_REFERENCE.md) — the
 complete technical reference in one file (1,086 lines): architecture, the full
 instruction set with encodings, CSR map, trap model, memory interface,
@@ -576,31 +556,17 @@ Then, by topic:
 | [`docs/e_core_verification_plan.md`](docs/e_core_verification_plan.md) | test matrix, coverage numbers, known limitations |
 | [`docs/e_core_results.md`](docs/e_core_results.md) | compliance pass table, CPI, stall breakdown, area estimate, methodology |
 | [`docs/lab_notebook.md`](docs/lab_notebook.md) | design decisions and debugging log, one entry per session, with the root cause of every bug found |
-| [`docs/DEMO_AND_EXPLAINER.md`](docs/DEMO_AND_EXPLAINER.md) | how to demo the core and explain it to a non-specialist audience |
+| [`docs/p_core_microarchitecture.md`](docs/p_core_microarchitecture.md) | P-Core datapath, predictor, MUL/DIV units, hazards and forwarding |
+| [`docs/p_core_verification_plan.md`](docs/p_core_verification_plan.md) | P-Core test matrix, coverage numbers, known limitations |
+| [`docs/p_core_results.md`](docs/p_core_results.md) | P-Core compliance, performance, area, and the E-Core comparison |
+| [`docs/logs/`](docs/logs/) | saved `make test` logs the results documents cite |
 
-The P-Core's documents (`docs/p_core_microarchitecture.md`,
-`docs/p_core_verification_plan.md`, `docs/p_core_results.md`,
-`docs/p_core_panel_presentation.md`) are on the `docs/p-core-presentation`
-branch; see §1.1.
-
----
-
-## 12. Presentation
-
-`presentation/` holds the project slide decks and the script that builds them:
-
-| File | What it is |
-|---|---|
-| `Project_A1_bigLITTLE_SoC_Presentation.pptx` | the full project deck |
-| `Project_A1_Minimal_Format_Presentation.pptx` | minimal-format version |
-| `generate_a1_ppt.py` | regenerates the minimal deck from code (`python-pptx`) |
-
-Editing the generator rather than the `.pptx` keeps the deck reproducible and
-diffable. See §6 for how to run it.
+Presentation material (slide decks, talking points) is kept out of the
+repository; see `.gitignore`.
 
 ---
 
-## 13. Working on this as a team
+## 12. Working on this as a team
 
 **Branching.** `main` stays green. Work on a branch named for the phase or the
 thing you are building — `phase2/p-core-pipeline`, `fix/lsu-halfword-store` —
@@ -628,10 +594,9 @@ you are probably running make from the wrong directory.
 
 ---
 
-## 14. Roadmap
+## 13. Roadmap
 
-**Phase 2, the P-Core, is complete** on the `docs/p-core-presentation` branch
-(§1.1), and merging it into `main` is the next step. It reused the E-Core's
+**Phase 2, the P-Core, is complete** (§1.1). It reused the E-Core's
 core-agnostic verification infrastructure (golden ISS, random generator,
 mutation harness, memory model) and its memory-port protocol, and it is
 measured against the E-Core's baseline in the comparison table in §1.1.
@@ -643,7 +608,7 @@ timeline and risk analysis, in
 
 ---
 
-## 15. Troubleshooting
+## 14. Troubleshooting
 
 **`make tools` reports no cross compiler.** Install one of the prefixes listed
 in §4, or pass `RISCV_PREFIX=` explicitly. A `riscv64-*` toolchain is fine — the

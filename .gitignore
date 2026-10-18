@@ -29,3 +29,11 @@ __pycache__/
 
 # Office lock files
 ~$*
+
+# Presentation material — kept locally, not part of the project sources
+presentation/
+scripts/gen_review2_ppt.py
+docs/DEMO_AND_EXPLAINER.md
+docs/p_core_panel_presentation.md
+docs/presentation_alu_csr_fetch.md
+*.pptx

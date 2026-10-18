@@ -59,6 +59,7 @@ zero_site:
     lw      x14, SAVED_TVAL(x2)
     CHECK_EQ x14, 0xFFFFFFFF, 10
 
+#ifndef CORE_HAS_M
     /* MUL: the M extension is not implemented and must trap */
     .word   0x02C58633              /* mul x12, x11, x12 */
     lw      x15, SAVED_CAUSE(x2)
@@ -70,6 +71,7 @@ zero_site:
     .word   0x02C5C633              /* div x12, x11, x12 */
     lw      x17, SAVED_CAUSE(x2)
     CHECK_EQ x17, 2, 13
+#endif
 
     /* ---- 14..16: misaligned LW, cause 4, mtval = the address ------------ */
     la      x18, scratch
