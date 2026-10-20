@@ -11,6 +11,13 @@
 # is how one module is checked under a second set of parameters:
 #   // UNIT-TOP: <module>          the module under test, if not tb_<module>
 #   // UNIT-VFLAGS: <flags>        extra Verilator flags, e.g. -GRV32M=1
+#   // UNIT-RTL: <files>           the RTL to compile, relative to the repo root,
+#                                  packages first (for a multi-module unit such
+#                                  as the coherent memory system)
+#
+# Harnesses live in tb/unit/ (rtl/common), tb/unit/p_core/ (rtl/p_core) and
+# tb/unit/coherence/ (rtl/cache + rtl/coherence) and tb/unit/interconnect/
+# (rtl/interconnect), the last two always via UNIT-RTL.
 set -uo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -24,7 +31,8 @@ OUT="$BUILD/unit"
 mkdir -p "$OUT"
 
 shopt -s nullglob
-HARNESSES=("$UNIT_DIR"/tb_*.cpp "$UNIT_DIR"/p_core/tb_*.cpp)
+HARNESSES=("$UNIT_DIR"/tb_*.cpp "$UNIT_DIR"/p_core/tb_*.cpp "$UNIT_DIR"/coherence/tb_*.cpp
+           "$UNIT_DIR"/interconnect/tb_*.cpp)
 if [ ${#HARNESSES[@]} -eq 0 ]; then
   echo "==> unit: no unit testbenches present yet"
   exit 0
@@ -35,15 +43,22 @@ printf "==> unit tests\n"
 for cpp in "${HARNESSES[@]}"; do
   base=$(basename "$cpp" .cpp)      # tb_alu
   name=${base#tb_}                  # alu, decoder_rv32m, ...
+  # UNIT_ONLY=<glob> runs only the matching harnesses (e.g. 'coherent_mem*').
+  if [ -n "${UNIT_ONLY:-}" ] && [[ $name != $UNIT_ONLY ]]; then continue; fi
   mod=$(grep -m1 -oP '^// UNIT-TOP:\s*\K\S+' "$cpp" || true)
   [ -z "$mod" ] && mod=$name
   read -r -a vflags <<< "$(grep -m1 -oP '^// UNIT-VFLAGS:\s*\K.*' "$cpp" || true)"
 
+  read -r -a unit_rtl <<< "$(grep -m1 -oP '^// UNIT-RTL:\s*\K.*' "$cpp" || true)"
+
   pkgs=("$RTL_PKG")
-  if [ -f "$ROOT/rtl/common/$mod.sv" ]; then
-    rtl="$ROOT/rtl/common/$mod.sv"
+  if [ ${#unit_rtl[@]} -gt 0 ]; then
+    pkgs=()
+    rtl=("${unit_rtl[@]/#/$ROOT/}")
+  elif [ -f "$ROOT/rtl/common/$mod.sv" ]; then
+    rtl=("$ROOT/rtl/common/$mod.sv")
   elif [ -f "$ROOT/rtl/p_core/$mod.sv" ]; then
-    rtl="$ROOT/rtl/p_core/$mod.sv"
+    rtl=("$ROOT/rtl/p_core/$mod.sv")
     pkgs+=("$P_PKG")
   else
     printf "  %-24s %s\n" "$name" "SKIP (no rtl for module $mod)"
@@ -60,7 +75,7 @@ for cpp in "${HARNESSES[@]}"; do
         --Mdir "$objdir" --top-module "$mod" "${vflags[@]}" \
         -CFLAGS "-std=c++17 -O2 -Wall -I$ROOT/tb/unit" \
         -o "$OUT/$name" \
-        "${pkgs[@]}" "$rtl" "$cpp" > "$log" 2>&1; then
+        "${pkgs[@]}" "${rtl[@]}" "$cpp" > "$log" 2>&1; then
     printf "  %-24s \033[31mBUILD FAIL\033[0m  (see %s)\n" "$name" "$log"
     tail -25 "$log" | sed 's/^/      /'
     fail=$((fail+1)); failed_names+=("$name:build"); continue

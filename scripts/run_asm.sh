@@ -35,6 +35,10 @@ pass=0; fail=0; failed=()
 printf "==> directed assembly tests (%s)\n" "$CORE"
 for src in "${TESTS[@]}"; do
   name=$(basename "$src" .S)
+  if [[ " $CORE_SKIP_TESTS " == *" $name "* ]]; then
+    printf "  %-28s SKIP (not applicable in this configuration)\n" "$name"
+    continue
+  fi
   elf="$OUT/$name.elf"
   if ! "$RVCC" $RVCFLAGS $CORE_ASM_DEFS -I"$ROOT/tb/asm" -T "$LDS" -o "$elf" "$src" ${RVLIBS:--lgcc} \
         > "$OUT/$name.build.log" 2>&1; then
@@ -53,11 +57,20 @@ for src in "${TESTS[@]}"; do
   # The last configuration is fast fetch with slow data ("0/d3"), which packs
   # instructions tightly behind a stalled load or store -- the case that
   # needs the P-core's operand refresh and result hold.
-  for waits in "0" "2" "random:1" "random:7" "0/d3"; do
+  # Uncached, one more: random latency with the core halted through its debug
+  # port every ~60 cycles ("random:3+h"; tb_core.cpp, HALT MODE), which the
+  # test must not notice. (Behind the cache the PMU owns the halt port.)
+  WAITS_SET=("0" "2" "random:1" "random:7" "0/d3")
+  # A test that checks exact event-counter or predictor values says
+  # NO-HALT-MODE: a halt re-executes the instruction it interrupts, which the
+  # counters see.
+  [ "$CACHED" = 1 ] || grep -q "NO-HALT-MODE" "$src" || WAITS_SET+=("random:3+h")
+  for waits in "${WAITS_SET[@]}"; do
     dflag=()
     w=$waits
+    if [[ "$w" == *+h ]]; then w=${w%+h}; dflag+=(--halt-every=60:${#name}); fi
     if [[ "$waits" == */d* ]]; then w=${waits%%/d*}; dflag=(--dwaits="${waits##*/d}"); fi
-    log="$OUT/$name.w${waits//[:\/]/_}.log"
+    log="$OUT/$name.w${waits//[:\/+]/_}.log"
     if ! "$SIM" --elf "$elf" --waits="$w" "${dflag[@]}" --max-cycles=1000000 > "$log" 2>&1; then
       printf "  %-28s \033[31mFAIL\033[0m (waits=%s)\n" "$name" "$waits"
       tail -30 "$log" | sed 's/^/      /'

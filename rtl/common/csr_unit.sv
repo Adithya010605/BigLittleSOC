@@ -24,12 +24,16 @@
 module csr_unit
   import e_core_pkg::*;
 #(
-  parameter logic [31:0] HART_ID = 32'h0000_0000,
   parameter logic [31:0] MISA    = MISA_VALUE,
   parameter int unsigned NUM_HPM = NUM_PERF     // 1 .. 29
 ) (
   input  logic                  clk_i,
   input  logic                  rst_ni,
+
+  // mhartid: the core's hart number. An input, not a parameter, because in the
+  // SoC it is the number of the software context the core is running, which
+  // the power manager changes when a context migrates (rtl/power/pmu.sv).
+  input  logic [31:0]           hart_id_i,
 
   // ---- Zicsr access from S3 ----
   input  logic                  csr_en_i,        // a CSR instruction is here
@@ -156,7 +160,7 @@ module csr_unit
       CSR_MVENDORID,
       CSR_MARCHID,
       CSR_MIMPID:        begin csr_rdata_o = 32'd0;   read_only = 1'b1; end
-      CSR_MHARTID:       begin csr_rdata_o = HART_ID; read_only = 1'b1; end
+      CSR_MHARTID:       begin csr_rdata_o = hart_id_i; read_only = 1'b1; end
 
       default:           exists = 1'b0;
     endcase

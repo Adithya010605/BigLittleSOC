@@ -102,10 +102,17 @@
 
        A loop of 32 load-use pairs removes the dependence: over that many
        memory accesses the pipeline is certain to be held back at least once
-       whatever the latency pattern. */
+       whatever the latency pattern -- provided a load is never much faster
+       than a fetch. Behind a data cache it can be: every load in the loop
+       hits in one cycle while each fetch still takes the full memory
+       latency, and the add never catches up with its load. The loop
+       therefore loads from the UART status register, which is uncached in
+       every configuration, so the load always takes at least as long as a
+       fetch. (It reads as 0; the value does not matter here.) */
     csrw    mhpmcounter3, x0
     li      x24, 32
-8:  lw      x25, 0(x20)
+    li      x23, 0x10000004         /* UART status: uncached */
+8:  lw      x25, 0(x23)
     add     x26, x25, x25           /* load-use: the interlock engages here */
     addi    x24, x24, -1
     bne     x24, x0, 8b

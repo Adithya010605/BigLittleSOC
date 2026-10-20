@@ -883,3 +883,275 @@ JAL should never mispredict once seen, so those are BTB conflict misses: the
 64-entry BTB is indexed by `pc[7:2]`, and any two control transfers 256 bytes
 apart share an entry. A return-address stack and a larger or set-associative
 BTB are the two obvious improvements; neither is in the plan's specification.
+
+---
+
+## 2026-10-15 — MSI coherence: L1 data caches, snooping bus, 2P+2E SoC
+
+Goal from the plan (§2.1–2.2, Phase 4 week 11, A1 scope): private L1 data
+caches (P: 16 KB 2-way write-back; E: 8 KB direct-mapped write-through), MSI
+snooping coherence, and the producer-consumer exit test, with both core types
+in one cluster. Full write-up: `docs/memory_system.md` (originally
+`docs/msi_coherence.md`).
+
+### Decision: an atomic bus, so the caches have no transient states
+
+The bus runs one transaction to completion before granting the next. A cache
+is then never snooped during its own transaction and a snoop never meets a
+half-filled line, so the L1 needs exactly three states and no pending ones.
+What is left is the case where a request is *waiting* for the bus while
+another cache's transaction changes the line under it. Two such races change
+what the request must do: an upgrade whose S copy is invalidated must become
+a BusRdX, and a modified victim that a snoop flushes must not be written
+back. The cache recomputes its command from its current state every cycle,
+and the bus grants only when no snoop is in progress, so the latched command
+always matches the state. Both races have directed tests that set them up
+exactly.
+
+### Decision: the cache grants only in the cycle it responds
+
+`gnt` and `rvalid` always rise together, so every access takes effect in the
+cycle the core sees it complete. That makes the system sequentially
+consistent (one access per core, in program order, performed at
+acknowledgement), which is what lets the bakery lock and the lock-free queues
+work without atomics. It also gives the testbench a simple, exact
+oracle: a reference memory updated at each store's acknowledgement, against
+which every load is checked.
+
+### Decision: one cache module, two personalities
+
+Write-back MSI and write-through S/I share the lookup, the snoop port, the
+fill path and the bus protocol. A write-through cache is simply one that never
+enters M and sends every store to the bus as BusWr, which is snooped like
+BusRdX (invalidate everyone; an M owner flushes and the word is merged on top
+in the same memory write). That is what lets P- and E-caches share lines
+coherently with one protocol.
+
+### Bug in my own testbench: the memory model ticked on the next cycle's request
+
+The first randomised run with 2-cycle memory failed at cycle 5: a line stale in
+memory with no owner. The RTL was right. The harness's memory model read
+`mem_req_o` and the write data *after* the clock edge, when the bus already
+shows its next state, so it applied writes late, to the wrong transaction, or
+not at all. The single-core harness has always captured the requests before
+the edge (step 2 of its cycle); the coherence harness now does the same.
+
+### Test assumption broken by the cache: csr_perf check 11
+
+Check 11 asserts that 32 load-use pairs stall the pipeline at least once. Behind
+the cache, every load in the loop hits in one cycle while each fetch still takes
+the full memory latency (no I-cache), so the dependent add never reaches
+decode before its load has finished, and there is correctly nothing to stall.
+The test's own comment already records the same latency dependence for
+`random:7`. The loop now loads from the UART status register, which is
+uncached in every configuration, so a load can never outrun a fetch. Same
+check, valid in every configuration.
+
+### Mutation testing: what the SoC programs do and do not reach
+
+15 mutations; the unit tests kill all 15. At system level, three needed work:
+
+* `writeback_not_rechecked` survived the first three programs. Writing back a
+  victim that a snoop already flushed is usually harmless, because the new
+  owner overwrites memory later. It is only visible when an E-core
+  write-through lands in that window and the stale writeback then overwrites
+  the merged word. Stress seeds 3 and 4 hit it, so the system set now runs all
+  four seeds.
+* `uncached_error_dropped` cannot be reached by the multi-core programs (none
+  touches unmapped memory). The system column now also runs the cached P-core
+  on `trap_exceptions` and `mem_align`, which kill it.
+* `victim_ignores_invalid_way` is performance-only (evicting a valid line
+  while a way is empty is still coherent). A directed test now checks which way
+  a fill uses.
+
+The unit harness also had a latent out-of-bounds read: an unmapped load that
+wrongly came back without an error indexed the MMIO reference array. It now
+compares only mapped addresses.
+
+### Numbers
+
+P-core behind its write-back L1: 1.001× the ideal zero-wait memory on fib and
+memcpy (99.9% hits); 2.0–3.5× faster than the bare core with an 8-cycle data
+memory. E-core behind its write-through L1: 1.2–1.5× slower than ideal memory,
+because every store waits for a bus transaction; 1.4–1.6× faster than bare
+with an 8-cycle memory. A write buffer is the obvious next step for the
+E-cache.
+
+---
+
+## 2026-10-15 (later) — the cache hierarchy, then the QoS interconnect
+
+Two phases on top of the MSI L1s, in the order chosen: first the plan's cache
+subsystem (Phase 3: L1 instruction caches, the shared inclusive L2, miss rates
+measurable), then the system interconnect (§3.1: QoS crossbar, RTL memory and
+peripherals). Write-up: `docs/memory_system.md`.
+
+### Decision: instruction caches are snooped like write-through caches
+
+An I-cache is the existing L1 with its store path unused: S/I lines, filled by
+BusRd, invalidated by any write. No new module, no new protocol, and
+instruction fetch becomes coherent with every core's stores: the storing
+core's own D-cache must take ownership, which invalidates its own I-cache's
+copy. `fence_i` (directed and compliance), skipped behind the caches until
+now, passes; the cached P-core suite now matches the bare one test for test.
+
+### Decision: the L2 lives inside the bus's transaction
+
+Every L2 action is part of a coherence transaction: a hit decides whom to snoop
+(the sharer bits are the snoop filter), and a miss must evict a victim whose
+L1 copies have to go first (inclusion). So the L2 is arrays only
+(`l2_cache.sv`), and the bus's state machine is its controller. The atomic-bus
+rule survives with one extension: during an L2 eviction, the requester itself
+may be back-invalidated (it may hold the victim). The L1 already tolerates a
+snoop while it waits for its own transaction (the snoop and the fill never
+write in the same cycle), so the L1 needed no change.
+
+### Sharer bits are conservative by design
+
+L1s drop clean lines silently, so a sharer bit can be stale. A stale bit costs
+one snoop that finds nothing and is then cleared; a missing bit would be a
+coherence bug. The harnesses check the second every cycle and a directed test
+measures the first.
+
+### Test gap found by mutation: nothing overflowed the L2
+
+Three L2-eviction mutations (no back-invalidation; back-invalidation dropping
+the modified data; dirty victim not written back) were killed by the unit
+tests but survived every multi-core program: none of them has a working set
+over 64 KB, so the L2 never evicted at system level. `mc_l2_thrash` (80 KB
+across four harts) produces ~5,800 back-invalidations and ~7,000 dirty
+writebacks per run and kills all three.
+
+### Bug: the peripherals decoded absolute addresses
+
+With the interconnect in, `irq_timer` hung in a trap storm. The traps were
+store access faults (cause 7, not the timer interrupt's 0x8000_0007): the
+interrupt controller and the system-control block validated their full
+address as if they sat at 0, so every register was "invalid". The crossbar
+already confines each slave to its window; the slaves now check only the
+offset.
+
+### Bug in my own test: the compiler deleted the measurement
+
+`mc_sysctl` failed its "streaming 32 KB must miss" check with a miss count of
+zero: the store loop to a static array nobody read had been removed by GCC.
+The buffers are now `volatile`.
+
+### Test gap found by mutation: nobody touched a window's edge
+
+A decoder whose window is one byte too large survived the system level: no
+program accessed the first address past a peripheral's window. (For the SRAM
+it is genuinely harmless: the controller faults out-of-range addresses
+itself.) `mc_bus_errors` installs a trap handler and checks that every edge,
+hole and missing hart faults with the right cause, and that the registers next
+to them do not.
+
+### Decision: the testbench loads programs through the interconnect
+
+Memory is RTL now, so the harness holds the cores and caches in reset, writes
+the program image through the debug master port, then releases them. No
+backdoor into the SRAM array is needed. Background traffic from the two
+remaining testbench master ports (checked against their own shadow memory)
+puts the arbiter under contention in every system run; it is also the only
+source of partial-line SRAM writes, which is what catches the strobe
+mutations.
+
+### Numbers
+
+Behind the full system with an SRAM stalled 4 cycles per access: fib 3.2×
+(P) and 2.3× (E) faster than the bare cores on an 8-cycle memory. All L2
+misses in the single-core C programs are first touches. L1I hit rates are
+99.4–99.99%.
+
+## 2026-10-15 (evening) — Phase 4: task migration and power management
+
+Plan §2.3 and Phase 7: the PMU (`rtl/power/pmu.sv`) migrates software
+contexts between the P-cores and the E-cores and manages power. Full write-up
+in `docs/power_migration.md`.
+
+### Decision: migrate through a debug port, not through memory
+
+The obvious software scheme -- save the registers to memory, wake the other
+core, restore -- needs an interrupt, a handler and cooperation from the
+program, and the plan's 100-cycle budget rules it out. Instead each core got
+a halt/debug port: the halt is taken by the trap unit like an interrupt (the
+instruction at the boundary is killed and becomes the resume PC), and while
+halted the register file's spare read port, its write port and the CSR port
+are switched to the debug port. The PMU copies 39 items out of one core and
+into the other, one per cycle: 84 cycles in all. Memory needs nothing --
+the caches are coherent, so the source core's dirty lines move on demand.
+
+`mhartid` became an input (the PMU drives it), so a hart keeps its number on
+whichever core runs it. The program can tell where it is only from `misa`.
+
+### Decision: slow cores, fast caches
+
+The DVFS stub divides only the cores' clocks. The L1s stay on the system
+clock -- they must answer snoops every cycle -- so they now take an access
+only in a cycle that ends with their core's clock edge, and hold a bus
+response that arrives in any other cycle. That broke the property the whole
+coherence verification rested on: the cycle a core sees `gnt` was the cycle
+the access took effect. A held load has already read its value and a snoop
+may since have invalidated the line, so the core-side handshake is no longer
+the memory-order point. Each L1 now has a performed-access monitor, and both
+checkers (unit and SoC) follow it; the unit harness additionally checks that
+every response arrives in an enabled cycle, after the monitor reported the
+access, with the data it reported.
+
+### Verilator and gated clocks
+
+Each core and each core's pair of L1s gets a latch-based clock gate. Verilator
+samples the pre-edge values correctly through the gate (checked before
+committing to the design), so the testbenches only had to learn that a core's
+RVFI outputs mean something only in cycles its clock is enabled.
+
+### Bug in my own test: `la` became gp-relative
+
+The migration self-test loads a signature into every register, gp included,
+then restores the stack pointer with `la`. The linker relaxed `la` into a
+gp-relative `addi`, and the hart trapped on the E-core -- after every
+register had already been verified across the move. The file now says
+`.option norelax`.
+
+### Test gap: the old "unmapped" address is the PMU now
+
+`trap_exceptions.S` used `0x4000_0000` as an address nothing decodes; the
+plan puts the power registers there. It uses `0x6000_0000` now.
+
+### Equivalent mutant: the P-core's write-back term in `halted_o`
+
+`halted_o` waited for an empty write-back stage. Mutation testing showed the
+term can never matter: the halt kills the instruction at the commit point, so
+by the time `halt_q` is set the write-back stage holds that killed
+instruction, which writes nothing. The term is gone, replaced by a
+simulation assertion that WB never writes while `halt_q` is set.
+
+### Halt mode in the single-core testbench
+
+`tb_core.cpp --halt-every=N` plays the PMU at random intervals: it halts the
+core, compares x1..x31, the PC and the travelling CSRs with the golden ISS,
+writes and reads back random values and restores them, then resumes. A
+program run that way must behave exactly as without the halts, so every
+directed test, half the random lockstep programs and a quarter of the
+coverage replay now also prove the halt path transparent.
+
+### Test gap found by mutation: the self-test set its registers too late
+
+A PMU that copied register k instead of k+1 (so x31 never moved) passed
+`mc_migrate`. The trace showed why: the self-test wrote the migration request
+first and loaded the signatures after, and the halt -- which lands a couple
+of instructions after the request's store completes -- came before the last
+`li`s. Those ran on the destination and rebuilt x31 there. The signatures now
+go in before the request; only the wait loop's register is unchecked, and a0
+(which carries the request) is checked against a saved copy.
+
+### Test gap found by mutation: nothing raced the flush
+
+A flush that writes back a line a snoop has already taken (stale data over
+the snooper's write) was killed by the unit harness and survived every
+program: in `mc_power` nobody touches the lines while the P cluster flushes.
+`mc_power_stress` has the E-cores store into 32 lines the P-cores left
+modified while the P cluster switches off. With both sweeps running upwards
+the flush simply outran the stores and they never met; with the E-cores
+sweeping downwards they meet head-on every round, and the mutant leaves a
+stale L2 line the checker reports at once.

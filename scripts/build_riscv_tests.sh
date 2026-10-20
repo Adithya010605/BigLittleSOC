@@ -70,6 +70,9 @@ if [ "$CORE" = p_core ]; then
 else
   SKIP_LIST=${RISCV_TESTS_SKIP:-"fence_i ma_data"}
 fi
+# Configuration-specific exclusions (core_config.sh): with CACHED=1, fence_i
+# needs coherent instruction fetch, which the system does not have yet.
+SKIP_LIST="$SKIP_LIST $CORE_SKIP_TESTS"
 
 CFLAGS="-march=$RVARCH -mabi=ilp32 -nostdlib -nostartfiles -ffreestanding \
         -fno-builtin -static -Wa,-march=$RVARCH \

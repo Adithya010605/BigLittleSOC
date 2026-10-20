@@ -40,6 +40,21 @@ esac
 CORE_SIM="$BUILD/${CORE}_sim"
 CORE_INC=(-I"$ROOT/rtl/common" -I"$ROOT/rtl/e_core" -I"$ROOT/rtl/p_core")
 
+# CACHED=1 runs the core behind its caches (L1 I and D, shared L2): a one-core build of
+# rtl/soc/soc_top.sv (tb/soc/tb_soc.cpp), which accepts the same options as
+# the bare core's simulator. Every per-core regression script then exercises
+# the cache with no change of its own. Products go to build/cached_<core>/.
+CACHED=${CACHED:-0}
+CORE_SKIP_TESTS=""
+if [ "$CACHED" = 1 ]; then
+  CORE_SIM="$BUILD/cached_${CORE}_sim"
+  CORE_OUT="$BUILD/cached_${CORE}"
+  # (No exclusions: instruction fetch goes through coherent L1 instruction
+  # caches, so even self-modifying code -- fence_i -- runs behind the
+  # caches. CORE_SKIP_TESTS stays available for configuration-specific
+  # exclusions.)
+fi
+
 # Ordered RTL file list for the core under test, rooted at $1 (default
 # $ROOT/rtl, overridden by the mutation script to point at a mutated copy).
 # Packages come first, because every other file refers to their types.
@@ -62,8 +77,30 @@ core_rtl_files() {
   fi
 }
 
+# Ordered RTL file list for the SoC (both cores, the coherent memory system
+# and soc_top), rooted at $1 (default $ROOT/rtl).
+soc_rtl_files() {
+  local rtl=${1:-$ROOT/rtl}
+  local f
+  echo "$rtl/common/e_core_pkg.sv"
+  echo "$rtl/p_core/p_core_pkg.sv"
+  echo "$rtl/cache/cache_pkg.sv"
+  for f in "$rtl"/common/*.sv; do
+    [ "$f" = "$rtl/common/e_core_pkg.sv" ] || echo "$f"
+  done
+  for f in "$rtl"/e_core/*.sv; do echo "$f"; done
+  for f in "$rtl"/p_core/*.sv; do
+    [ "$f" = "$rtl/p_core/p_core_pkg.sv" ] || echo "$f"
+  done
+  for f in "$rtl"/cache/*.sv; do
+    [ "$f" = "$rtl/cache/cache_pkg.sv" ] || echo "$f"
+  done
+  for f in "$rtl"/coherence/*.sv "$rtl"/interconnect/*.sv "$rtl"/periph/*.sv "$rtl"/power/*.sv \
+           "$rtl"/soc/*.sv; do echo "$f"; done
+}
+
 # The test programs are compiled for the core's ISA: with the M extension the
 # C compiler emits hardware multiply and divide instead of libgcc calls.
 RVARCH=$CORE_ARCH
 RVCFLAGS="-march=$RVARCH -mabi=${RVABI:-ilp32} -mcmodel=medany -nostdlib -nostartfiles -ffreestanding -fno-builtin -O2 -g -Wall -Wextra -fno-common -fomit-frame-pointer"
-export CORE RVARCH RVCFLAGS
+export CORE RVARCH RVCFLAGS CACHED

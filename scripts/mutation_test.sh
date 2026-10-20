@@ -121,6 +121,14 @@ MUTATIONS=(
 # ---- load/store unit --------------------------------------------------------
 "lsu_be_always_word@@kill@@common/lsu.sv@@      SZ_BYTE: be_o = 4'b0001 << addr_lsb_i;@@      SZ_BYTE: be_o = 4'b1111;"
 "lsu_no_sign_extend@@kill@@common/lsu.sv@@      SZ_BYTE: rdata_ext_o = {{24{sign_i & byte_sel[7]}}, byte_sel};@@      SZ_BYTE: rdata_ext_o = {24'd0, byte_sel};"
+
+# ---- halt and debug port (the PMU's migration path) ---------------------------
+# Killed by the halt-mode runs (halt: below), which compare the halted state
+# with the golden ISS and check every debug write by reading it back.
+"halt_resumes_past_insn@@kill@@e_core/e_core_trap.sv@@  assign redirect_pc_o = take_halt ? pc_i :@@  assign redirect_pc_o = take_halt ? pc_i + 32'd4 :"
+"halted_insn_retires@@kill@@e_core/e_core_top.sv@@    .trap_i             (trap_taken | halt_taken),@@    .trap_i             (trap_taken),"
+"debug_rf_write_lost@@kill@@e_core/e_core_id_stage.sv@@    .we_i      (dbg_en_i ? dbg_we_i : rf_we_i),@@    .we_i      (dbg_en_i ? 1'b0 : rf_we_i),"
+"debug_pc_write_lost@@kill@@e_core/e_core_top.sv@@      if (dbg_en && dbg_pc_we_i) dpc_q <= dbg_wdata_i;@@      if (1'b0) dpc_q <= dbg_wdata_i;"
 )
 
 # Mutations needing a second edit, applied on top of the first.
@@ -135,6 +143,9 @@ TESTS=()
 for t in m2_basic hazard_raw hazard_load_use branch_basic branch_hazard jump_link mem_align x0_writes; do
   TESTS+=("$BUILD/asm/$t.elf")
 done
+# Randomised programs in lockstep with the core halted every ~40 cycles
+# through its debug port (tb_core.cpp, HALT MODE): the halt: prefix.
+for e in $(ls "$BUILD"/random/*.elf 2>/dev/null | head -4); do TESTS+=("halt:$e"); done
 
 else   # ---------------------------- P-core ---------------------------------
 
@@ -211,6 +222,12 @@ MUTATIONS=(
 "div_no_zero_case@@kill@@p_core/p_core_div.sv@@      div_zero_q <= (b_i == 32'd0);@@      div_zero_q <= 1'b0;"
 "div_quotient_sign@@kill@@p_core/p_core_div.sv@@      q_neg_q    <= a_neg ^ b_neg;@@      q_neg_q    <= a_neg;"
 "div_not_killed@@kill@@p_core/p_core_ex_stage.sv@@  p_core_div u_div (\n    .clk_i    (clk_i),\n    .rst_ni   (rst_ni),\n    .start_i  (is_div),\n    .kill_i   (flush_i),@@  p_core_div u_div (\n    .clk_i    (clk_i),\n    .rst_ni   (rst_ni),\n    .start_i  (is_div),\n    .kill_i   (1'b0),"
+
+# ---- halt and debug port (the PMU's migration path) ---------------------------
+"halt_resumes_past_insn@@kill@@e_core/e_core_trap.sv@@  assign redirect_pc_o = take_halt ? pc_i :@@  assign redirect_pc_o = take_halt ? pc_i + 32'd4 :"
+"halted_insn_retires@@kill@@p_core/p_core_top.sv@@    .trap_i                 (trap_taken | halt_taken),@@    .trap_i                 (trap_taken),"
+"debug_rf_write_lost@@kill@@p_core/p_core_id_stage.sv@@    .we_i      (dbg_en_i ? dbg_we_i : rf_we_i),@@    .we_i      (dbg_en_i ? 1'b0 : rf_we_i),"
+"debug_pc_write_lost@@kill@@p_core/p_core_top.sv@@      if (dbg_en && dbg_pc_we_i) dpc_q <= dbg_wdata_i;@@      if (1'b0) dpc_q <= dbg_wdata_i;"
 )
 
 EXTRA_EDITS=(
@@ -228,12 +245,15 @@ done
 # A few randomised programs, checked instruction by instruction against the
 # golden ISS: the lockstep: prefix turns lockstep on for that run.
 for e in $(ls "$CORE_OUT"/random/*.elf 2>/dev/null | head -8); do TESTS+=("lockstep:$e"); done
+# ...and four of them with the core halted every ~40 cycles (halt:).
+for e in $(ls "$CORE_OUT"/random/*.elf 2>/dev/null | head -4); do TESTS+=("halt:$e"); done
 fi
 
 # The ELFs are built by the regular suites; make sure they exist.
 for t in "${TESTS[@]}"; do
-  if [ ! -f "${t#lockstep:}" ]; then
-    echo "mutation_test: missing ${t#lockstep:} -- run the asm, riscv and random suites first" >&2
+  tf=${t#lockstep:}; tf=${tf#halt:}
+  if [ ! -f "$tf" ]; then
+    echo "mutation_test: missing $tf -- run the asm, riscv and random suites first" >&2
     exit 2
   fi
 done
@@ -327,6 +347,7 @@ PY
     elf=${t#lockstep:}
     extra=()
     [ "$elf" != "$t" ] && extra+=(--lockstep)
+    if [ "${t#halt:}" != "$t" ]; then elf=${t#halt:}; extra=(--lockstep --halt-every=40:7); fi
     tname=$(basename "$elf" .elf)
     for w in "${WAITS_LIST[@]}"; do
       wf=(--waits="$w")

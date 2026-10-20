@@ -47,7 +47,11 @@ for elf in "${ELFS[@]}"; do
   # skid buffer, the wrong-path discard, the multi-cycle memory handshake --
   # are covered too. At zero wait states several of them never activate.
   if [ $((n % 3)) -eq 0 ]; then w="random:$n"; else w=0; fi
-  "$SIM" --elf "$elf" --waits="$w" --max-cycles=20000000 \
+  # and every fourth with the core halted now and then through its debug
+  # port (the PMU's migration path)
+  hflag=()
+  [ $((n % 4)) -eq 1 ] && hflag=(--halt-every=80:$n)
+  "$SIM" --elf "$elf" --waits="$w" "${hflag[@]}" --max-cycles=20000000 \
          --coverage-out="$OUT/cov_$n.dat" > /dev/null 2>&1 || true
 done
 
