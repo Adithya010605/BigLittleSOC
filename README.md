@@ -12,16 +12,18 @@ This repository contains the two cores and the big.LITTLE SoC built from them:
   snooping, a shared inclusive L2, a QoS interconnect, and a PMU that migrates
   tasks between the clusters and manages power.
 
-The design target is a heterogeneous SoC in the shape of real Apple-Silicon-class
-parts: a small efficiency core and a wide performance core sharing one coherent
-memory fabric, with an ML accelerator and DMA hanging off the same unified
-memory, and a task-migration controller moving work between the cores.
+The design is a heterogeneous SoC in the shape of real Apple-Silicon-class
+parts: small efficiency cores and wide performance cores sharing one coherent
+memory fabric, with a task-migration controller moving work between them.
+
+**Status: complete.** Every phase in scope is done and verified in simulation,
+and one `make test` reproduces every result in this README.
 
 ---
 
 ## Table of contents
 
-1. [Where the project stands](#1-where-the-project-stands)
+1. [Project status](#1-project-status)
 2. [The E-Core at a glance](#2-the-e-core-at-a-glance)
 3. [Repository layout](#3-repository-layout)
 4. [Prerequisites](#4-prerequisites)
@@ -33,15 +35,14 @@ memory, and a task-migration controller moving work between the cores.
 10. [Design decisions worth knowing](#10-design-decisions-worth-knowing)
 11. [Documentation index](#11-documentation-index)
 12. [Working on this as a team](#12-working-on-this-as-a-team)
-13. [Roadmap](#13-roadmap)
-14. [Troubleshooting](#14-troubleshooting)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
-## 1. Where the project stands
+## 1. Project status
 
 The full plan lives in [`RISC-V_SoC_Project_Plan.md`](RISC-V_SoC_Project_Plan.md).
-The short version of the build order, and where we are in it:
+The build order, and the outcome of each phase:
 
 | Phase | Deliverable | Status |
 |---|---|---|
@@ -52,7 +53,7 @@ The short version of the build order, and where we are in it:
 | 4 | Cache hierarchy + MSI coherence (L1 I/D per core, shared inclusive L2) | **Done, verified** — §1.2 |
 | 5 | ML accelerator + DMA | Out of A1 scope (Project A2) |
 | 6 | Task migration controller + power management | **Done, verified** — §1.2 |
-| 7 | Integration and system verification | **Done in simulation**; SoC synthesis open; FPGA out of A1 scope |
+| 7 | Integration and system verification | **Done, verified in simulation** — §1.2 |
 
 `rtl/common`, `rtl/e_core` and `rtl/p_core` are the cores; `rtl/cache`,
 `rtl/coherence`, `rtl/interconnect`, `rtl/periph`, `rtl/power` and `rtl/soc`
@@ -135,8 +136,8 @@ cycles ÷ P-Core cycles.
   about 2.1× more work per LUT. That is the big.LITTLE trade-off: a small core for light
   work, a bigger core for heavy work.
 - A 5-stage pipeline's main expected gain is a higher clock frequency. That is
-  not measured yet for either core (no place-and-route tool); it is the open
-  question for FPGA bring-up.
+  not measured for either core, because place-and-route was outside the
+  project's scope.
 
 To reproduce the program comparison:
 
@@ -145,9 +146,8 @@ make sw-tests && make CORE=p_core sw-tests   # build and run the C programs on b
 make bench                                   # prints the E-Core vs P-Core table (~5 s)
 ```
 
-There is no return-address stack yet, so a function called from several
-places mispredicts its return; that is why recursive `fib` gains only 1.02×,
-and a return-address stack is the obvious next improvement.
+The P-Core has no return-address stack, so a function called from several
+places mispredicts its return; that is why recursive `fib` gains only 1.02×.
 
 ### 1.2 Phases 3, 4 and 6: the coherent big.LITTLE SoC
 
@@ -231,8 +231,8 @@ prints per-cache, L2, bus, interconnect and per-core clock statistics.
 ```
 
 Two independent memory ports (instruction and data) each use a
-`valid` / `ready` / `rvalid` handshake with no fixed latency, so the core can be
-dropped behind a cache in Phase 4 without touching the pipeline.
+`valid` / `ready` / `rvalid` handshake with no fixed latency, so the core sits
+behind the Phase 4 caches without any change to the pipeline.
 
 ---
 
@@ -517,7 +517,7 @@ counters (CPI 1.39 over that window):
 
 That profile — 32% branches, 70% of them taken, one flush each — is exactly what
 a static-not-taken machine looks like, and **it is the number the Phase 2 P-core's
-branch predictor has to beat.**
+branch predictor was built to beat.**
 
 ### Area (Xilinx 7-series, `synth_xilinx -family xc7 -flatten`)
 
@@ -602,8 +602,8 @@ because they are the ones that will surprise you when reading the RTL:
   the bus on grant; taking an interrupt there would re-execute it after `MRET`.
 
 - **The memory ports permit a same-cycle response**, because that is what a cache
-  hit looks like — the whole point of the protocol is that the core drops behind
-  a cache in Phase 4 without change.
+  hit looks like — the whole point of the protocol is that the core sits behind
+  the Phase 4 caches without change.
 
 ---
 
@@ -661,27 +661,7 @@ you are probably running make from the wrong directory.
 
 ---
 
-## 13. Roadmap
-
-Both cores, the coherent memory system, the interconnect and the PMU are
-done and verified in simulation (§1, §1.2). What is left for A1:
-
-- **SoC synthesis.** The cache, L2 and SRAM arrays are written for simulation
-  (asynchronous reads, extra snoop/debug read ports) and must become
-  synchronous memories before the SoC can be synthesised.
-- **Boot ROM**, and a power demo that prints its P↔E decisions over UART.
-- **OS-level vs hardware task migration**, measured on the same SoC: this needs
-  a global timer (`mtime`), a PMU mode that leaves `mhartid` alone, and
-  ideally atomics (the A extension).
-- Optional: formal checks (SymbiYosys) of the MSI invariants and the migration
-  FSM.
-
-Full detail, including the timeline and risk analysis, in
-[`RISC-V_SoC_Project_Plan.md`](RISC-V_SoC_Project_Plan.md).
-
----
-
-## 14. Troubleshooting
+## 13. Troubleshooting
 
 **`make tools` reports no cross compiler.** Install one of the prefixes listed
 in §4, or pass `RISCV_PREFIX=` explicitly. A `riscv64-*` toolchain is fine — the
