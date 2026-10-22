@@ -3,7 +3,9 @@
 //
 // The big.LITTLE cluster: NUM_P P-cores and NUM_E E-cores, each with private
 // L1 instruction and data caches, kept coherent by MSI snooping on one bus,
-// with a shared, inclusive 64 KB L2 behind it (rtl/coherence/coherent_mem.sv).
+// with a shared, inclusive 64 KB L2 behind it (rtl/coherence/snoop_bus.sv).
+// Each core and its two L1s form a tile (rtl/soc/p_tile.sv, e_tile.sv): the
+// block that is laid out once and placed once per core.
 //
 //   core 0 .. NUM_P-1    P-cores (RV32IM, 5-stage) + 16 KB 2-way L1D (WB) + L1I
 //   core NUM_P .. N-1    E-cores (RV32I,  3-stage) +  8 KB direct L1D (WT) + L1I
@@ -49,6 +51,7 @@ module soc_top
   parameter int unsigned NUM_P = 2,
   parameter int unsigned NUM_E = 2,
   parameter bit          RVFI  = 1'b0,
+  parameter int unsigned SRAM_SIZE = 32'h0003_0000,   // bytes
   localparam int unsigned N     = NUM_P + NUM_E,
   localparam int unsigned NL1   = 2 * N,
   localparam int unsigned MID_W = (NL1 > 1) ? $clog2(NL1) : 1
@@ -146,7 +149,7 @@ module soc_top
   logic [N-1:0] irq_timer, irq_software, irq_external;
 
   // PMU <-> cores and caches
-  logic [N-1:0]       core_clk_en, l1_clk_en, l1_flush, l1_flush_done, core_clk;
+  logic [N-1:0]       core_clk_en, l1_clk_en, l1_flush, l1_flush_done;
   logic [N-1:0]       halt_req, halted, retire;
   logic [N-1:0][31:0] hart_id;
   logic [4:0]         dbg_rf_addr;
@@ -157,19 +160,6 @@ module soc_top
 
   assign core_en_o = core_clk_en;
   assign hart_id_o = hart_id;
-
-  for (genvar c = 0; c < int'(N); c++) begin : g_core_clk
-    clock_gate u_cg (.clk_i(clk_i), .en_i(core_clk_en[c]), .clk_o(core_clk[c]));
-  end
-
-  // Core <-> L1 instruction ports
-  logic [N-1:0]       i_req, i_gnt, i_rvalid, i_err;
-  logic [N-1:0][31:0] i_addr, i_rdata;
-
-  // Core <-> L1 data ports
-  logic [N-1:0]       d_req, d_we, d_gnt, d_rvalid, d_err;
-  logic [N-1:0][31:0] d_addr, d_wdata, d_rdata;
-  logic [N-1:0][3:0]  d_be;
 
   // Performed-access monitors of every L1; the data caches' come out.
   logic [NL1-1:0]       pf_valid, pf_we, pf_err;
@@ -188,147 +178,169 @@ module soc_top
   assign unused_ipf = ^{pf_valid[NL1-1:N], pf_we[NL1-1:N], pf_err[NL1-1:N], pf_addr[NL1-1:N],
                         pf_wdata[NL1-1:N], pf_rdata[NL1-1:N], pf_be[NL1-1:N]};
 
-  // Every port of a core except its identity; both core types have the same
-  // interface, which is the point.
-  `define SOC_CORE_PORTS(i)                                        \
-      .clk_i            (core_clk[i]),                             \
-      .rst_ni           (cpu_rst_n),                               \
-      .hart_id_i        (hart_id[i]),                              \
-      .halt_req_i       (halt_req[i]),                             \
-      .halted_o         (halted[i]),                               \
-      .retire_o         (retire[i]),                               \
-      .dbg_rf_addr_i    (dbg_rf_addr),                             \
-      .dbg_rf_we_i      (dbg_rf_we[i]),                            \
-      .dbg_rf_rdata_o   (dbg_rf_rdata[i]),                         \
-      .dbg_csr_addr_i   (dbg_csr_addr),                            \
-      .dbg_csr_we_i     (dbg_csr_we[i]),                           \
-      .dbg_csr_rdata_o  (dbg_csr_rdata[i]),                        \
-      .dbg_pc_o         (dbg_pc[i]),                               \
-      .dbg_pc_we_i      (dbg_pc_we[i]),                            \
-      .dbg_wdata_i      (dbg_wdata),                               \
-      .instr_req_o      (i_req[i]),                                \
-      .instr_addr_o     (i_addr[i]),                               \
-      .instr_gnt_i      (i_gnt[i]),                                \
-      .instr_rvalid_i   (i_rvalid[i]),                             \
-      .instr_rdata_i    (i_rdata[i]),                              \
-      .instr_err_i      (i_err[i]),                                \
-      .data_req_o       (d_req[i]),                                \
-      .data_addr_o      (d_addr[i]),                               \
-      .data_we_o        (d_we[i]),                                 \
-      .data_be_o        (d_be[i]),                                 \
-      .data_wdata_o     (d_wdata[i]),                              \
-      .data_gnt_i       (d_gnt[i]),                                \
-      .data_rvalid_i    (d_rvalid[i]),                             \
-      .data_rdata_i     (d_rdata[i]),                              \
-      .data_err_i       (d_err[i]),                                \
-      .irq_timer_i      (irq_timer[i]),                            \
-      .irq_software_i   (irq_software[i]),                         \
-      .irq_external_i   (irq_external[i]),                         \
-      .rvfi_valid_o     (rvfi_valid_o[i]),                         \
-      .rvfi_order_o     (rvfi_order_o[i]),                         \
-      .rvfi_insn_o      (rvfi_insn_o[i]),                          \
-      .rvfi_trap_o      (rvfi_trap_o[i]),                          \
-      .rvfi_halt_o      (rvfi_halt_o[i]),                          \
-      .rvfi_intr_o      (rvfi_intr_o[i]),                          \
-      .rvfi_mode_o      (rvfi_mode_o[i]),                          \
-      .rvfi_ixl_o       (rvfi_ixl_o[i]),                           \
-      .rvfi_rs1_addr_o  (rvfi_rs1_addr_o[i]),                      \
-      .rvfi_rs2_addr_o  (rvfi_rs2_addr_o[i]),                      \
-      .rvfi_rs1_rdata_o (rvfi_rs1_rdata_o[i]),                     \
-      .rvfi_rs2_rdata_o (rvfi_rs2_rdata_o[i]),                     \
-      .rvfi_rd_addr_o   (rvfi_rd_addr_o[i]),                       \
-      .rvfi_rd_wdata_o  (rvfi_rd_wdata_o[i]),                      \
-      .rvfi_pc_rdata_o  (rvfi_pc_rdata_o[i]),                      \
-      .rvfi_pc_wdata_o  (rvfi_pc_wdata_o[i]),                      \
-      .rvfi_mem_addr_o  (rvfi_mem_addr_o[i]),                      \
-      .rvfi_mem_rmask_o (rvfi_mem_rmask_o[i]),                     \
-      .rvfi_mem_wmask_o (rvfi_mem_wmask_o[i]),                     \
-      .rvfi_mem_rdata_o (rvfi_mem_rdata_o[i]),                     \
-      .rvfi_mem_wdata_o (rvfi_mem_wdata_o[i])
+  // ====================================================================
+  // The tiles: each core with its L1 caches (rtl/soc/p_tile.sv, e_tile.sv)
+  // ====================================================================
+  // L1 <-> bus, every L1 in one array: the data caches first (L1 c), then the
+  // instruction caches (L1 N+c), as the debug probe, the event counters and
+  // the snoop filter number them.
+  logic     [NL1-1:0]                 bus_req;
+  bus_cmd_e [NL1-1:0]                 bus_cmd;
+  logic     [NL1-1:0][31:0]           bus_addr;
+  logic     [NL1-1:0][LINE_BITS-1:0]  bus_wdata;
+  logic     [NL1-1:0][LINE_BYTES-1:0] bus_be;
+  logic     [NL1-1:0]                 bus_done;
+  logic     [LINE_BITS-1:0]           bus_rdata;
+  logic                               bus_err;
+
+  logic     [NL1-1:0]                 snoop_valid;
+  snoop_e                             snoop_type;
+  logic     [31:0]                    snoop_addr;
+  logic     [NL1-1:0]                 snoop_hit;
+  logic     [NL1-1:0]                 snoop_dirty;
+  logic     [NL1-1:0][LINE_BITS-1:0]  snoop_data;
+
+  // Every port of a tile; both tiles have the same ones, which is the point.
+  `define SOC_TILE_PORTS(c)                                                  \
+      .clk_i            (clk_i),                                             \
+      .rst_ni           (cpu_rst_n),                                         \
+      .core_clk_en_i    (core_clk_en[c]),                                    \
+      .l1_clk_en_i      (l1_clk_en[c]),                                      \
+      .flush_i          (l1_flush[c]),                                       \
+      .flush_done_o     (l1_flush_done[c]),                                  \
+      .hart_id_i        (hart_id[c]),                                        \
+      .halt_req_i       (halt_req[c]),                                       \
+      .halted_o         (halted[c]),                                         \
+      .retire_o         (retire[c]),                                         \
+      .dbg_rf_addr_i    (dbg_rf_addr),                                       \
+      .dbg_rf_we_i      (dbg_rf_we[c]),                                      \
+      .dbg_rf_rdata_o   (dbg_rf_rdata[c]),                                   \
+      .dbg_csr_addr_i   (dbg_csr_addr),                                      \
+      .dbg_csr_we_i     (dbg_csr_we[c]),                                     \
+      .dbg_csr_rdata_o  (dbg_csr_rdata[c]),                                  \
+      .dbg_pc_o         (dbg_pc[c]),                                         \
+      .dbg_pc_we_i      (dbg_pc_we[c]),                                      \
+      .dbg_wdata_i      (dbg_wdata),                                         \
+      .irq_timer_i      (irq_timer[c]),                                      \
+      .irq_software_i   (irq_software[c]),                                   \
+      .irq_external_i   (irq_external[c]),                                   \
+      .bus_req_o        ({bus_req[N+(c)],     bus_req[c]}),                  \
+      .bus_cmd_o        ({bus_cmd[N+(c)],     bus_cmd[c]}),                  \
+      .bus_addr_o       ({bus_addr[N+(c)],    bus_addr[c]}),                 \
+      .bus_wdata_o      ({bus_wdata[N+(c)],   bus_wdata[c]}),                \
+      .bus_be_o         ({bus_be[N+(c)],      bus_be[c]}),                   \
+      .bus_done_i       ({bus_done[N+(c)],    bus_done[c]}),                 \
+      .bus_rdata_i      (bus_rdata),                                         \
+      .bus_err_i        (bus_err),                                           \
+      .snoop_valid_i    ({snoop_valid[N+(c)], snoop_valid[c]}),              \
+      .snoop_type_i     (snoop_type),                                        \
+      .snoop_addr_i     (snoop_addr),                                        \
+      .snoop_hit_o      ({snoop_hit[N+(c)],   snoop_hit[c]}),                \
+      .snoop_dirty_o    ({snoop_dirty[N+(c)], snoop_dirty[c]}),              \
+      .snoop_data_o     ({snoop_data[N+(c)],  snoop_data[c]}),               \
+      .events_o         ({events_o[N+(c)],    events_o[c]}),                 \
+      .l1_dbg_addr_i    (dbg_addr_i),                                        \
+      .l1_dbg_state_o   ({dbg_state_o[N+(c)], dbg_state_o[c]}),              \
+      .l1_dbg_data_o    ({dbg_data_o[N+(c)],  dbg_data_o[c]}),               \
+      .perf_valid_o     ({pf_valid[N+(c)],    pf_valid[c]}),                 \
+      .perf_addr_o      ({pf_addr[N+(c)],     pf_addr[c]}),                  \
+      .perf_we_o        ({pf_we[N+(c)],       pf_we[c]}),                    \
+      .perf_be_o        ({pf_be[N+(c)],       pf_be[c]}),                    \
+      .perf_wdata_o     ({pf_wdata[N+(c)],    pf_wdata[c]}),                 \
+      .perf_rdata_o     ({pf_rdata[N+(c)],    pf_rdata[c]}),                 \
+      .perf_err_o       ({pf_err[N+(c)],      pf_err[c]}),                   \
+      .rvfi_valid_o     (rvfi_valid_o[c]),                                   \
+      .rvfi_order_o     (rvfi_order_o[c]),                                   \
+      .rvfi_insn_o      (rvfi_insn_o[c]),                                    \
+      .rvfi_trap_o      (rvfi_trap_o[c]),                                    \
+      .rvfi_halt_o      (rvfi_halt_o[c]),                                    \
+      .rvfi_intr_o      (rvfi_intr_o[c]),                                    \
+      .rvfi_mode_o      (rvfi_mode_o[c]),                                    \
+      .rvfi_ixl_o       (rvfi_ixl_o[c]),                                     \
+      .rvfi_rs1_addr_o  (rvfi_rs1_addr_o[c]),                                \
+      .rvfi_rs2_addr_o  (rvfi_rs2_addr_o[c]),                                \
+      .rvfi_rs1_rdata_o (rvfi_rs1_rdata_o[c]),                               \
+      .rvfi_rs2_rdata_o (rvfi_rs2_rdata_o[c]),                               \
+      .rvfi_rd_addr_o   (rvfi_rd_addr_o[c]),                                 \
+      .rvfi_rd_wdata_o  (rvfi_rd_wdata_o[c]),                                \
+      .rvfi_pc_rdata_o  (rvfi_pc_rdata_o[c]),                                \
+      .rvfi_pc_wdata_o  (rvfi_pc_wdata_o[c]),                                \
+      .rvfi_mem_addr_o  (rvfi_mem_addr_o[c]),                                \
+      .rvfi_mem_rmask_o (rvfi_mem_rmask_o[c]),                               \
+      .rvfi_mem_wmask_o (rvfi_mem_wmask_o[c]),                               \
+      .rvfi_mem_rdata_o (rvfi_mem_rdata_o[c]),                               \
+      .rvfi_mem_wdata_o (rvfi_mem_wdata_o[c])
 
   for (genvar i = 0; i < int'(NUM_P); i++) begin : g_p
-    p_core_top #(
+    p_tile #(
       .RVFI (RVFI)
-    ) u_core (
-      `SOC_CORE_PORTS(i)
+    ) u_tile (
+      `SOC_TILE_PORTS(i)
     );
   end
 
   for (genvar j = 0; j < int'(NUM_E); j++) begin : g_e
-    e_core_top #(
+    e_tile #(
       .RVFI (RVFI)
-    ) u_core (
-      `SOC_CORE_PORTS(NUM_P + j)
+    ) u_tile (
+      `SOC_TILE_PORTS(NUM_P + j)
     );
   end
 
-  `undef SOC_CORE_PORTS
+  `undef SOC_TILE_PORTS
 
+  // ====================================================================
+  // The snooping bus and the shared L2 (rtl/coherence/snoop_bus.sv)
+  // ====================================================================
   // The L2's memory port
   logic                  mem_req, mem_we, mem_uncached, mem_rvalid, mem_err;
   logic [31:0]           mem_addr;
   logic [LINE_BITS-1:0]  mem_wdata, mem_rdata;
   logic [LINE_BYTES-1:0] mem_be;
 
-  coherent_mem #(
-    .NUM_WB (NUM_P),
-    .NUM_WT (NUM_E)
-  ) u_mem (
-    .clk_i          (clk_i),
-    .rst_ni         (cpu_rst_n),
-    .core_en_i      (core_clk_en),
-    .l1_clk_en_i    (l1_clk_en),
-    .flush_i        (l1_flush),
-    .flush_done_o   (l1_flush_done),
-    .core_req_i     (d_req),
-    .core_addr_i    (d_addr),
-    .core_we_i      (d_we),
-    .core_be_i      (d_be),
-    .core_wdata_i   (d_wdata),
-    .core_gnt_o     (d_gnt),
-    .core_rvalid_o  (d_rvalid),
-    .core_rdata_o   (d_rdata),
-    .core_err_o     (d_err),
-    .instr_req_i    (i_req),
-    .instr_addr_i   (i_addr),
-    .instr_gnt_o    (i_gnt),
-    .instr_rvalid_o (i_rvalid),
-    .instr_rdata_o  (i_rdata),
-    .instr_err_o    (i_err),
-    .mem_req_o      (mem_req),
-    .mem_we_o       (mem_we),
-    .mem_uncached_o (mem_uncached),
-    .mem_addr_o     (mem_addr),
-    .mem_wdata_o    (mem_wdata),
-    .mem_be_o       (mem_be),
-    .mem_rvalid_i   (mem_rvalid),
-    .mem_rdata_i    (mem_rdata),
-    .mem_err_i      (mem_err),
-    .dbg_addr_i     (dbg_addr_i),
-    .dbg_state_o    (dbg_state_o),
-    .dbg_data_o     (dbg_data_o),
+  snoop_bus #(
+    .N (NL1)
+  ) u_bus (
+    .clk_i            (clk_i),
+    .rst_ni           (cpu_rst_n),
+    .req_i            (bus_req),
+    .cmd_i            (bus_cmd),
+    .addr_i           (bus_addr),
+    .wdata_i          (bus_wdata),
+    .be_i             (bus_be),
+    .done_o           (bus_done),
+    .rdata_o          (bus_rdata),
+    .err_o            (bus_err),
+    .snoop_valid_o    (snoop_valid),
+    .snoop_type_o     (snoop_type),
+    .snoop_addr_o     (snoop_addr),
+    .snoop_hit_i      (snoop_hit),
+    .snoop_dirty_i    (snoop_dirty),
+    .snoop_data_i     (snoop_data),
+    .mem_req_o        (mem_req),
+    .mem_we_o         (mem_we),
+    .mem_uncached_o   (mem_uncached),
+    .mem_addr_o       (mem_addr),
+    .mem_wdata_o      (mem_wdata),
+    .mem_be_o         (mem_be),
+    .mem_rvalid_i     (mem_rvalid),
+    .mem_rdata_i      (mem_rdata),
+    .mem_err_i        (mem_err),
+    .dbg_addr_i       (dbg_addr_i),
     .dbg_l2_present_o (dbg_l2_present_o),
     .dbg_l2_dirty_o   (dbg_l2_dirty_o),
     .dbg_l2_sharers_o (dbg_l2_sharers_o),
     .dbg_l2_data_o    (dbg_l2_data_o),
-    .perf_valid_o   (pf_valid),
-    .perf_addr_o    (pf_addr),
-    .perf_we_o      (pf_we),
-    .perf_be_o      (pf_be),
-    .perf_wdata_o   (pf_wdata),
-    .perf_rdata_o   (pf_rdata),
-    .perf_err_o     (pf_err),
-    .events_o       (events_o),
-    .l2_events_o    (l2_events_o),
-    .mon_done_o     (mon_done_o),
-    .mon_busy_o     (mon_busy_o),
-    .mon_master_o   (mon_master_o),
-    .mon_cmd_o      (mon_cmd_o),
-    .mon_addr_o     (mon_addr_o),
-    .mon_shared_o   (mon_shared_o),
-    .mon_dirty_o    (mon_dirty_o),
-    .mon_vvalid_o   (mon_vvalid_o),
-    .mon_vaddr_o    (mon_vaddr_o)
+    .mon_done_o       (mon_done_o),
+    .mon_busy_o       (mon_busy_o),
+    .mon_master_o     (mon_master_o),
+    .mon_cmd_o        (mon_cmd_o),
+    .mon_addr_o       (mon_addr_o),
+    .mon_shared_o     (mon_shared_o),
+    .mon_dirty_o      (mon_dirty_o),
+    .mon_vvalid_o     (mon_vvalid_o),
+    .mon_vaddr_o      (mon_vaddr_o),
+    .l2_events_o      (l2_events_o)
   );
 
   // ====================================================================
@@ -430,7 +442,7 @@ module soc_top
       .rsp_rdata_o   (s_rsp_rdata[j]),        \
       .rsp_err_o     (s_rsp_err[j])
 
-  sram_ctrl #(.SIZE(32'h0003_0000)) u_sram (
+  sram_ctrl #(.SIZE(SRAM_SIZE)) u_sram (
     `SOC_SLAVE_PORTS(0),
     .stall_i      (mem_stall_i),
     .dbg_addr_i   (dbg_addr_i),

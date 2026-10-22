@@ -1,5 +1,5 @@
 // UNIT-TOP: coherent_mem
-// UNIT-RTL: rtl/power/clock_gate.sv rtl/cache/cache_pkg.sv rtl/cache/l1_dcache.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
+// UNIT-RTL: rtl/power/clock_gate.sv rtl/cache/cache_pkg.sv rtl/cache/sram_sp.sv rtl/cache/l1_dcache.sv rtl/cache/l1_pair.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
 // UNIT-VFLAGS: -GL2_SETS=4 -CFLAGS -DCOH_L2_SETS=4 -GNUM_WB=4 -GNUM_WT=0 -GWB_SETS=4 -CFLAGS -DCOH_NUM_WB=4 -CFLAGS -DCOH_NUM_WT=0 -CFLAGS -DCOH_WB_SETS=4
 // ============================================================================
 // tb_coherent_mem_wb4.cpp — MSI coherence among four write-back L1s.

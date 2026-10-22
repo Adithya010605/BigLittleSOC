@@ -30,15 +30,18 @@
 // ---------------------------------------------------------------------------
 //
 //   B_IDLE    round-robin grant; latch the request
-//   B_LOOKUP  look the line up in the L2
-//     hit:    snoop the sharers other than the requester if there are any
-//             (B_SNOOP), then act (B_ACT)
-//     miss:   evict the victim way: back-invalidate its sharers (B_BINV),
-//             write it back if dirty (B_VWB); then fetch the line (B_FILL),
-//             which also completes the request
+//   B_LOOKUP  start reading the line's set out of the L2's data SRAM
 //     uncached: straight to memory (B_MEM)
-//   B_SNOOP   one cycle; record whether any sharer held a copy and capture
-//             the line from the one that held it M
+//   B_LDATA   the data has arrived: look the line up in the L2
+//     hit:    snoop the sharers other than the requester if there are any
+//             (B_SNOOP, B_SDATA), then act (B_ACT)
+//     miss:   evict the victim way: back-invalidate its sharers (B_BINV,
+//             B_BDATA), write it back if dirty (B_VWB); then fetch the line
+//             (B_FILL), which also completes the request
+//   B_SNOOP   one cycle; record whether any sharer held a copy, and which one
+//             held it M
+//   B_SDATA   capture the M copy's line, which the L1 reads out of its data
+//             SRAM in the snoop cycle and delivers in this one
 //   B_ACT     update the L2 line (data, dirty, sharers) and respond
 //
 // Per command, on an L2 hit:
@@ -60,8 +63,8 @@
 // word merged and dirty for BUS_WR), and the requester answered in the same
 // cycle. BUS_UPGR and BUS_WB always hit (the requester holds the line).
 //
-// Latency at zero memory wait states: an L2 hit is 3 cycles (grant, lookup,
-// act), 4 with a snoop; an L2 miss with a clean victim is 3.
+// Latency at zero memory wait states: an L2 hit is 4 cycles (grant, lookup,
+// data, act), 6 with a snoop; an L2 miss with a clean victim is 4.
 //
 // ---------------------------------------------------------------------------
 // MEMORY SIDE
@@ -135,8 +138,9 @@ module snoop_bus
   output logic     [NUM_L2EV-1:0]          l2_events_o
 );
 
-  typedef enum logic [2:0] {
-    B_IDLE, B_LOOKUP, B_BINV, B_VWB, B_FILL, B_SNOOP, B_ACT, B_MEM
+  typedef enum logic [3:0] {
+    B_IDLE, B_LOOKUP, B_LDATA, B_BINV, B_BDATA, B_VWB, B_FILL, B_SNOOP, B_SDATA,
+    B_ACT, B_MEM
   } bstate_e;
 
   bstate_e               bs_q, bs_d;
@@ -157,6 +161,8 @@ module snoop_bus
   logic                  dirty_q;     // the snoop found a modified copy...
   logic [LINE_BITS-1:0]  line_q;      // ...and this is its line
   logic                  shared_q;    // the snoop found any copy
+  logic [N-1:0]          sdirty_q;    // the L1 that held the snooped line M
+  logic [LINE_BITS-1:0]  lk_data;     // the L2's copy of the hit line
 
   logic [31:0] line_addr;
   assign line_addr = {addr_q[31:OFFSET_W], OFFSET_W'(0)};
@@ -173,8 +179,9 @@ module snoop_bus
   logic                 lk_hit, lk_dirty, vc_valid, vc_dirty;
   logic [1:0]           lk_way, vc_way;
   logic [N-1:0]         lk_sharers, vc_sharers;
-  logic [LINE_BITS-1:0] lk_data, vc_data;
+  logic [LINE_BITS-1:0] lk_rdata, vc_data;    // valid in B_LDATA
   logic [31:0]          vc_addr;
+  logic                 l2_rd;
 
   logic                 l2_we, l2_wvalid, l2_wdirty, l2_wdata_en, l2_touch;
   logic [1:0]           l2_wway;
@@ -189,11 +196,12 @@ module snoop_bus
     .clk_i         (clk_i),
     .rst_ni        (rst_ni),
     .lk_addr_i     (line_addr),
+    .rd_en_i       (l2_rd),
     .lk_hit_o      (lk_hit),
     .lk_way_o      (lk_way),
     .lk_sharers_o  (lk_sharers),
     .lk_dirty_o    (lk_dirty),
-    .lk_data_o     (lk_data),
+    .lk_data_o     (lk_rdata),
     .vc_way_o      (vc_way),
     .vc_valid_o    (vc_valid),
     .vc_dirty_o    (vc_dirty),
@@ -251,16 +259,21 @@ module snoop_bus
   assign snoop_type_o  = (bs_q == B_SNOOP && cmd_q == BUS_RD) ? SNP_RD : SNP_INV;
   assign snoop_addr_o  = (bs_q == B_BINV) ? vaddr_q : line_addr;
 
-  logic                 snp_dirty;
+  // In the snoop cycle (B_SNOOP, B_BINV): did any sharer hold the line, and
+  // which one held it modified?
   logic                 snp_shared;
+  logic [N-1:0]         snp_dmask;
+  assign snp_shared = (snoop_valid_o & snoop_hit_i) != '0;
+  assign snp_dmask  = snoop_valid_o & snoop_dirty_i;
+
+  // In the next cycle (B_SDATA, B_BDATA): that L1's line.
+  logic                 snp_dirty;
   logic [LINE_BITS-1:0] snp_line;
   always_comb begin
-    snp_dirty  = 1'b0;
-    snp_shared = 1'b0;
-    snp_line   = '0;
+    snp_dirty = 1'b0;
+    snp_line  = '0;
     for (int i = 0; i < int'(N); i++) begin
-      if (snoop_valid_o[i] && snoop_hit_i[i])   snp_shared = 1'b1;
-      if (snoop_valid_o[i] && snoop_dirty_i[i]) begin
+      if (sdirty_q[i]) begin
         snp_dirty = 1'b1;
         snp_line  = snoop_data_i[i];
       end
@@ -299,6 +312,7 @@ module snoop_bus
     l2_wdata_en    = 1'b0;
     l2_wdata       = '0;
     l2_touch       = 1'b0;
+    l2_rd          = 1'b0;
 
     l2_events_o    = '0;
 
@@ -310,7 +324,15 @@ module snoop_bus
       B_LOOKUP: begin
         if (cmd_q == BUS_UNC_RD || cmd_q == BUS_UNC_WR) begin
           bs_d = B_MEM;
-        end else if (lk_hit) begin
+        end else begin
+          l2_rd = 1'b1;           // the set's data, every way, next cycle
+          bs_d  = B_LDATA;
+        end
+      end
+
+      // ------------------------------------------------------------------
+      B_LDATA: begin
+        if (lk_hit) begin
           l2_events_o[L2EV_HIT] = 1'b1;
           bs_d = (cmd_q != BUS_WB && hit_targets != '0) ? B_SNOOP : B_ACT;
         end else begin
@@ -324,8 +346,10 @@ module snoop_bus
       // ------------------------------------------------------------------
       B_BINV: begin
         l2_events_o[L2EV_BACKINV] = 1'b1;
-        bs_d = (vdirty_q || snp_dirty) ? B_VWB : B_FILL;
+        bs_d = B_BDATA;
       end
+
+      B_BDATA: bs_d = (vdirty_q || snp_dirty) ? B_VWB : B_FILL;
 
       // ------------------------------------------------------------------
       B_VWB: begin
@@ -366,7 +390,9 @@ module snoop_bus
       end
 
       // ------------------------------------------------------------------
-      B_SNOOP: bs_d = B_ACT;
+      B_SNOOP: bs_d = B_SDATA;
+
+      B_SDATA: bs_d = B_ACT;
 
       // ------------------------------------------------------------------
       B_ACT: begin
@@ -450,6 +476,8 @@ module snoop_bus
       dirty_q    <= 1'b0;
       line_q     <= '0;
       shared_q   <= 1'b0;
+      sdirty_q   <= '0;
+      lk_data    <= '0;
     end else begin
       bs_q <= bs_d;
       unique case (bs_q)
@@ -464,10 +492,11 @@ module snoop_bus
           shared_q <= 1'b0;
           vvalid_q <= 1'b0;
         end
-        B_LOOKUP: begin
+        B_LDATA: begin
           if (lk_hit) begin
             way_q     <= lk_way;
             sharers_q <= lk_sharers;
+            lk_data   <= lk_rdata;
           end else begin
             way_q      <= vc_way;
             vvalid_q   <= vc_valid;
@@ -477,13 +506,17 @@ module snoop_bus
             vline_q    <= vc_data;
           end
         end
-        B_BINV: if (snp_dirty) begin
+        B_BINV: sdirty_q <= snp_dmask;
+        B_BDATA: if (snp_dirty) begin
           vdirty_q <= 1'b1;
           vline_q  <= snp_line;    // the L1's modified copy is the newest
         end
         B_SNOOP: begin
-          dirty_q  <= snp_dirty;
           shared_q <= snp_shared;
+          sdirty_q <= snp_dmask;
+        end
+        B_SDATA: begin
+          dirty_q  <= snp_dirty;
           line_q   <= snp_line;
         end
         default: ;
@@ -503,10 +536,10 @@ module snoop_bus
         else $error("snoop_bus: more than one cache holds line %08x modified", snoop_addr_o);
     end
     if (bs_q == B_SNOOP) begin
-      assert (!(cmd_q == BUS_UPGR && snp_dirty))
+      assert (!(cmd_q == BUS_UPGR && a_dirty != '0))
         else $error("snoop_bus: BUS_UPGR found a modified copy of %08x", line_addr);
     end
-    if (bs_q == B_LOOKUP) begin
+    if (bs_q == B_LDATA) begin
       // The requester of an upgrade or a writeback holds the line, so an
       // inclusive L2 must hold it too.
       assert (lk_hit || !(cmd_q == BUS_UPGR || cmd_q == BUS_WB))

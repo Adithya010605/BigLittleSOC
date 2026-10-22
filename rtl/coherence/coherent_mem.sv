@@ -121,44 +121,7 @@ module coherent_mem
   output logic [31:0]                       mon_vaddr_o
 );
 
-  // Every L1 as one array of ports: data caches first, then instruction.
-  logic [NL1-1:0]       l1_req, l1_we, l1_gnt, l1_rvalid, l1_err;
-  logic [NL1-1:0][31:0] l1_addr, l1_wdata, l1_rdata;
-  logic [NL1-1:0][3:0]  l1_be;
-  logic [NL1-1:0]       l1_fdone;
-
-  for (genvar i = 0; i < int'(NC); i++) begin : g_ports
-    assign l1_req[i]        = core_req_i[i];
-    assign l1_addr[i]       = core_addr_i[i];
-    assign l1_we[i]         = core_we_i[i];
-    assign l1_be[i]         = core_be_i[i];
-    assign l1_wdata[i]      = core_wdata_i[i];
-    assign core_gnt_o[i]    = l1_gnt[i];
-    assign core_rvalid_o[i] = l1_rvalid[i];
-    assign core_rdata_o[i]  = l1_rdata[i];
-    assign core_err_o[i]    = l1_err[i];
-
-    assign l1_req[NC+i]      = instr_req_i[i];
-    assign l1_addr[NC+i]     = instr_addr_i[i];
-    assign l1_we[NC+i]       = 1'b0;
-    assign l1_be[NC+i]       = 4'hF;
-    assign l1_wdata[NC+i]    = '0;
-    assign instr_gnt_o[i]    = l1_gnt[NC+i];
-    assign instr_rvalid_o[i] = l1_rvalid[NC+i];
-    assign instr_rdata_o[i]  = l1_rdata[NC+i];
-    assign instr_err_o[i]    = l1_err[NC+i];
-
-    assign flush_done_o[i]   = l1_fdone[i] & l1_fdone[NC+i];
-  end
-
-  // Core c's L1s share one gated clock.
-  logic [NC-1:0] l1_clk;
-  for (genvar c = 0; c < int'(NC); c++) begin : g_l1_clk
-    clock_gate u_cg (.clk_i(clk_i), .en_i(l1_clk_en_i[c]), .clk_o(l1_clk[c]));
-  end
-
-
-  // L1 <-> bus
+  // L1 <-> bus, every L1 in one array: data caches first, then instruction.
   logic     [NL1-1:0]                 bus_req;
   bus_cmd_e [NL1-1:0]                 bus_cmd;
   logic     [NL1-1:0][31:0]           bus_addr;
@@ -175,58 +138,63 @@ module coherent_mem
   logic     [NL1-1:0]                 snoop_dirty;
   logic     [NL1-1:0][LINE_BITS-1:0]  snoop_data;
 
-  for (genvar i = 0; i < int'(NL1); i++) begin : g_l1
-    localparam int unsigned CORE   = (i < int'(NC)) ? i : i - NC;
-    localparam bit          IS_P   = (CORE < int'(NUM_WB));
-    localparam bit          IS_D   = (i < int'(NC));
-    localparam int unsigned WAYS   = IS_P ? WB_WAYS : 1;
-    localparam int unsigned SETS   = IS_P ? WB_SETS : WT_SETS;
+  // Each core's two L1s (rtl/cache/l1_pair.sv): its data cache is L1 c, its
+  // instruction cache L1 NC+c.
+  for (genvar c = 0; c < int'(NC); c++) begin : g_l1
+    localparam bit IS_P = (c < int'(NUM_WB));
 
-    l1_dcache #(
-      .WAYS            (WAYS),
-      .SETS            (SETS),
-      .WRITE_BACK      (IS_P && IS_D),
+    l1_pair #(
+      .WAYS            (IS_P ? WB_WAYS : 1),
+      .SETS            (IS_P ? WB_SETS : WT_SETS),
+      .WRITE_BACK      (IS_P),
       .CACHEABLE_LIMIT (CACHEABLE_LIMIT)
     ) u_l1 (
-      .clk_i          (l1_clk[CORE]),
-      .rst_ni         (rst_ni),
-      .core_en_i      (core_en_i[CORE]),
-      .core_req_i     (l1_req[i]),
-      .core_addr_i    (l1_addr[i]),
-      .core_we_i      (l1_we[i]),
-      .core_be_i      (l1_be[i]),
-      .core_wdata_i   (l1_wdata[i]),
-      .core_gnt_o     (l1_gnt[i]),
-      .core_rvalid_o  (l1_rvalid[i]),
-      .core_rdata_o   (l1_rdata[i]),
-      .core_err_o     (l1_err[i]),
-      .bus_req_o      (bus_req[i]),
-      .bus_cmd_o      (bus_cmd[i]),
-      .bus_addr_o     (bus_addr[i]),
-      .bus_wdata_o    (bus_wdata[i]),
-      .bus_be_o       (bus_be[i]),
-      .bus_done_i     (bus_done[i]),
-      .bus_rdata_i    (bus_rdata),
-      .bus_err_i      (bus_err),
-      .snoop_valid_i  (snoop_valid[i]),
-      .snoop_type_i   (snoop_type),
-      .snoop_addr_i   (snoop_addr),
-      .snoop_hit_o    (snoop_hit[i]),
-      .snoop_dirty_o  (snoop_dirty[i]),
-      .snoop_data_o   (snoop_data[i]),
-      .dbg_addr_i     (dbg_addr_i),
-      .dbg_state_o    (dbg_state_o[i]),
-      .dbg_data_o     (dbg_data_o[i]),
-      .perf_valid_o   (perf_valid_o[i]),
-      .perf_addr_o    (perf_addr_o[i]),
-      .perf_we_o      (perf_we_o[i]),
-      .perf_be_o      (perf_be_o[i]),
-      .perf_wdata_o   (perf_wdata_o[i]),
-      .perf_rdata_o   (perf_rdata_o[i]),
-      .perf_err_o     (perf_err_o[i]),
-      .flush_i        (flush_i[CORE]),
-      .flush_done_o   (l1_fdone[i]),
-      .events_o       (events_o[i])
+      .clk_i         (clk_i),
+      .rst_ni        (rst_ni),
+      .core_en_i     (core_en_i[c]),
+      .l1_clk_en_i   (l1_clk_en_i[c]),
+      .flush_i       (flush_i[c]),
+      .flush_done_o  (flush_done_o[c]),
+      .d_req_i       (core_req_i[c]),
+      .d_addr_i      (core_addr_i[c]),
+      .d_we_i        (core_we_i[c]),
+      .d_be_i        (core_be_i[c]),
+      .d_wdata_i     (core_wdata_i[c]),
+      .d_gnt_o       (core_gnt_o[c]),
+      .d_rvalid_o    (core_rvalid_o[c]),
+      .d_rdata_o     (core_rdata_o[c]),
+      .d_err_o       (core_err_o[c]),
+      .i_req_i       (instr_req_i[c]),
+      .i_addr_i      (instr_addr_i[c]),
+      .i_gnt_o       (instr_gnt_o[c]),
+      .i_rvalid_o    (instr_rvalid_o[c]),
+      .i_rdata_o     (instr_rdata_o[c]),
+      .i_err_o       (instr_err_o[c]),
+      .bus_req_o     ({bus_req[NC+c],     bus_req[c]}),
+      .bus_cmd_o     ({bus_cmd[NC+c],     bus_cmd[c]}),
+      .bus_addr_o    ({bus_addr[NC+c],    bus_addr[c]}),
+      .bus_wdata_o   ({bus_wdata[NC+c],   bus_wdata[c]}),
+      .bus_be_o      ({bus_be[NC+c],      bus_be[c]}),
+      .bus_done_i    ({bus_done[NC+c],    bus_done[c]}),
+      .bus_rdata_i   (bus_rdata),
+      .bus_err_i     (bus_err),
+      .snoop_valid_i ({snoop_valid[NC+c], snoop_valid[c]}),
+      .snoop_type_i  (snoop_type),
+      .snoop_addr_i  (snoop_addr),
+      .snoop_hit_o   ({snoop_hit[NC+c],   snoop_hit[c]}),
+      .snoop_dirty_o ({snoop_dirty[NC+c], snoop_dirty[c]}),
+      .snoop_data_o  ({snoop_data[NC+c],  snoop_data[c]}),
+      .dbg_addr_i    (dbg_addr_i),
+      .dbg_state_o   ({dbg_state_o[NC+c],  dbg_state_o[c]}),
+      .dbg_data_o    ({dbg_data_o[NC+c],   dbg_data_o[c]}),
+      .perf_valid_o  ({perf_valid_o[NC+c], perf_valid_o[c]}),
+      .perf_addr_o   ({perf_addr_o[NC+c],  perf_addr_o[c]}),
+      .perf_we_o     ({perf_we_o[NC+c],    perf_we_o[c]}),
+      .perf_be_o     ({perf_be_o[NC+c],    perf_be_o[c]}),
+      .perf_wdata_o  ({perf_wdata_o[NC+c], perf_wdata_o[c]}),
+      .perf_rdata_o  ({perf_rdata_o[NC+c], perf_rdata_o[c]}),
+      .perf_err_o    ({perf_err_o[NC+c],   perf_err_o[c]}),
+      .events_o      ({events_o[NC+c],     events_o[c]})
     );
   end
 

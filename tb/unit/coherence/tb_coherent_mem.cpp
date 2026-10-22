@@ -1,5 +1,5 @@
 // UNIT-TOP: coherent_mem
-// UNIT-RTL: rtl/power/clock_gate.sv rtl/cache/cache_pkg.sv rtl/cache/l1_dcache.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
+// UNIT-RTL: rtl/power/clock_gate.sv rtl/cache/cache_pkg.sv rtl/cache/sram_sp.sv rtl/cache/l1_dcache.sv rtl/cache/l1_pair.sv rtl/cache/l2_cache.sv rtl/coherence/snoop_bus.sv rtl/coherence/coherent_mem.sv
 // ============================================================================
 // tb_coherent_mem.cpp — the cache hierarchy, full-size geometry.
 //

@@ -139,8 +139,8 @@ MUTATIONS = [
     ("hold_loses_data", "kill", L1,
      "          core_rdata_o  = hold_rdata_q;", "          core_rdata_o  = '0;"),
     ("flush_drops_modified", "kill", L1,
-     "          if (WRITE_BACK && state_q[fl_way_q][fl_idx_q] == MSI_M) begin\n            cs_d = C_FWB;",
-     "          if (1'b0) begin\n            cs_d = C_FWB;"),
+     "          if (WRITE_BACK && state_q[fl_way_q][fl_idx_q] == MSI_M) begin\n            cs_d = C_FRD;",
+     "          if (1'b0) begin\n            cs_d = C_FRD;"),
     ("flush_done_after_one_line", "kill", L1,
      "            if (fl_last) cs_d = C_FLUSHED;", "            cs_d = C_FLUSHED;"),
     ("flush_wb_race_ignored", "kill", L1,
@@ -178,7 +178,7 @@ MUTATIONS = [
      "    if (np_active > int'(budget_q)) begin", "    if (1'b0) begin"),
     # ---- peripherals (no unit testbench: the system level must catch them) ----
     ("sram_ignores_strobes", "kill", SRAM,
-     "line_merge(mem[lidx(req_addr_i)], req_wdata_i, req_wstrb_i)", "req_wdata_i"),
+     "line_merge(ram_rdata, wdata_q, wstrb_q)", "wdata_q"),
     ("irq_timer_cannot_clear", "kill", IRQ,
      "          8'h4: begin\n            count_q[hid]     <= '0;\n            irq_timer_o[hid] <= 1'b0;",
      "          8'h4: begin\n            count_q[hid]     <= '0;"),
@@ -189,7 +189,7 @@ MUTATIONS = [
      "    for (int l = 0; l < 4; l++) if (wbe[l]) tx_byte = wword[8*l +: 8];"),
 ]
 
-UNIT_RTL = ["power/clock_gate.sv", "cache/cache_pkg.sv", "cache/l1_dcache.sv", "cache/l2_cache.sv",
+UNIT_RTL = ["power/clock_gate.sv", "cache/cache_pkg.sv", "cache/sram_sp.sv", "cache/l1_dcache.sv", "cache/l1_pair.sv", "cache/l2_cache.sv",
             "coherence/snoop_bus.sv", "coherence/coherent_mem.sv"]
 XBAR_UNIT = ("unit/xbar", "interconnect", "tb_qos_xbar.cpp", "qos_xbar",
              ["cache/cache_pkg.sv", "interconnect/qos_xbar.sv"])

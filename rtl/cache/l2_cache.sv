@@ -11,11 +11,16 @@
 // coherence transaction: a fill must first evict a victim and invalidate its
 // L1 copies (inclusion), and a hit decides which L1s to snoop.
 //
+// Tags, valid, dirty, sharer bits and the pseudo-LRU state are flip-flops;
+// the line data is a single-port SRAM per way (sram_sp.sv).
+//
 // Ports:
 //   lookup  combinational: does the L2 hold lk_addr_i's line, in which way,
-//           with which sharers, dirty or not, and its data. Also the victim
-//           way for that set (an invalid way first, else pseudo-LRU) and
-//           everything about the line in it.
+//           with which sharers, dirty or not. Also the victim way for that
+//           set (an invalid way first, else pseudo-LRU) and everything about
+//           the line in it. The two lines' data (lk_data_o, vc_data_o) come
+//           from the data SRAM: rd_en_i reads lk_addr_i's set, and the data
+//           is there in the next cycle, for the same lk_addr_i.
 //   write   one write per cycle: tag/valid/dirty/sharers of one way, and
 //           optionally its data; optionally marks the way most recently used.
 //   probe   a third lookup for the testbench's invariant checks.
@@ -37,6 +42,7 @@ module l2_cache
 
   // ---- Lookup ----
   input  logic [31:0]           lk_addr_i,
+  input  logic                  rd_en_i,
   output logic                  lk_hit_o,
   output logic [1:0]            lk_way_o,
   output logic [NC-1:0]         lk_sharers_o,
@@ -83,8 +89,10 @@ module l2_cache
   logic                 valid_q   [WAYS][SETS];
   logic                 dirty_q   [WAYS][SETS];
   logic [NC-1:0]        sharers_q [WAYS][SETS];
-  logic [LINE_BITS-1:0] data_q    [WAYS][SETS];
   logic [2:0]           plru_q    [SETS];
+
+  logic [WAYS-1:0][LINE_BITS-1:0] rd_line;    // valid the cycle after rd_en_i
+  logic [WAYS-1:0][LINE_BITS-1:0] dbg_line;
 
   // --------------------------------------------------------------------
   // Lookup and victim
@@ -111,14 +119,14 @@ module l2_cache
   end
   assign lk_sharers_o = sharers_q[lk_way_o][l_idx];
   assign lk_dirty_o   = dirty_q[lk_way_o][l_idx];
-  assign lk_data_o    = data_q[lk_way_o][l_idx];
+  assign lk_data_o    = rd_line[lk_way_o];
 
   assign vc_way_o     = l_inv_found ? l_inv_way : plru4_victim(plru_q[l_idx]);
   assign vc_valid_o   = valid_q[vc_way_o][l_idx];
   assign vc_dirty_o   = dirty_q[vc_way_o][l_idx];
   assign vc_addr_o    = {tag_q[vc_way_o][l_idx], l_idx, OFFSET_W'(0)};
   assign vc_sharers_o = sharers_q[vc_way_o][l_idx];
-  assign vc_data_o    = data_q[vc_way_o][l_idx];
+  assign vc_data_o    = rd_line[vc_way_o];
 
   // --------------------------------------------------------------------
   // Probe
@@ -138,7 +146,7 @@ module l2_cache
   end
   assign dbg_dirty_o   = dirty_q[d_way][d_idx];
   assign dbg_sharers_o = sharers_q[d_way][d_idx];
-  assign dbg_data_o    = data_q[d_way][d_idx];
+  assign dbg_data_o    = dbg_line[d_way];
 
   // --------------------------------------------------------------------
   // Write
@@ -164,8 +172,36 @@ module l2_cache
       dirty_q[wr_way_i][w_idx]   <= wr_dirty_i;
       sharers_q[wr_way_i][w_idx] <= wr_sharers_i;
     end
-    if (wr_en_i && wr_data_en_i) data_q[wr_way_i][w_idx] <= wr_data_i;
   end
+
+  // --------------------------------------------------------------------
+  // Data SRAM, one per way: a line write uses its way's SRAM; a read reads
+  // every way's at lk_addr_i's set. The bus never does both in one cycle.
+  // --------------------------------------------------------------------
+  for (genvar w = 0; w < int'(WAYS); w++) begin : g_data
+    logic wr_this;
+    assign wr_this = wr_en_i && wr_data_en_i && wr_way_i == 2'(w);
+    sram_sp #(
+      .DEPTH (SETS),
+      .WIDTH (LINE_BITS)
+    ) u_data (
+      .clk_i       (clk_i),
+      .ce_i        (wr_this || rd_en_i),
+      .we_i        (wr_this),
+      .addr_i      (wr_this ? w_idx : l_idx),
+      .wdata_i     (wr_data_i),
+      .rdata_o     (rd_line[w]),
+      .dbg_addr_i  (d_idx),
+      .dbg_rdata_o (dbg_line[w])
+    );
+  end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i) begin
+    assert (!(rd_en_i && wr_en_i && wr_data_en_i))
+      else $error("l2_cache: read and write of the data SRAM in one cycle");
+  end
+`endif
 
   logic unused_addr_bits;
   assign unused_addr_bits = ^{lk_addr_i[OFFSET_W-1:0], dbg_addr_i[OFFSET_W-1:0],

@@ -37,3 +37,9 @@ docs/DEMO_AND_EXPLAINER.md
 docs/p_core_panel_presentation.md
 docs/presentation_alu_csr_fetch.md
 *.pptx
+
+# Local physical-design notes and tools (not committed)
+docs/physical_design_plan.md
+docs/pd_flow_guide.md
+docs/soc_explained.md
+scripts/orfs_shell.sh
