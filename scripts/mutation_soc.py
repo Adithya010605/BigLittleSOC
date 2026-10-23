@@ -51,8 +51,8 @@ PMU = "power/pmu.sv"
 MUTATIONS = [
     # ---- snoop response ---------------------------------------------------
     ("snoop_inv_keeps_S", "kill", L1,
-     "      if (snoop_type_i == SNP_INV) begin\n        snp_upd  = 1'b1;",
-     "      if (snoop_type_i == SNP_INV && state_q[s_way][s_idx] == MSI_M) begin\n        snp_upd  = 1'b1;"),
+     "      if (s_type_q == SNP_INV) begin\n        snp_upd  = 1'b1;",
+     "      if (s_type_q == SNP_INV && state_q[s_way][s_idx_q] == MSI_M) begin\n        snp_upd  = 1'b1;"),
     ("snoop_rd_keeps_M", "kill", L1,
      "        snp_next = MSI_S;", "        snp_next = MSI_M;"),
     ("snoop_inv_leaves_S", "kill", L1,

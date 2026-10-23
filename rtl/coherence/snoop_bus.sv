@@ -38,10 +38,10 @@
 //     miss:   evict the victim way: back-invalidate its sharers (B_BINV,
 //             B_BDATA), write it back if dirty (B_VWB); then fetch the line
 //             (B_FILL), which also completes the request
-//   B_SNOOP   one cycle; record whether any sharer held a copy, and which one
-//             held it M
-//   B_SDATA   capture the M copy's line, which the L1 reads out of its data
-//             SRAM in the snoop cycle and delivers in this one
+//   B_SNOOP   one cycle: the sharers read the line's set out of their tag and
+//             data SRAMs
+//   B_SDATA   they answer: record whether any held a copy, and capture the
+//             line from the one that held it M
 //   B_ACT     update the L2 line (data, dirty, sharers) and respond
 //
 // Per command, on an L2 hit:
@@ -161,7 +161,7 @@ module snoop_bus
   logic                  dirty_q;     // the snoop found a modified copy...
   logic [LINE_BITS-1:0]  line_q;      // ...and this is its line
   logic                  shared_q;    // the snoop found any copy
-  logic [N-1:0]          sdirty_q;    // the L1 that held the snooped line M
+  logic [N-1:0]          starget_q;   // the L1s snooped in the last cycle
   logic [LINE_BITS-1:0]  lk_data;     // the L2's copy of the hit line
 
   logic [31:0] line_addr;
@@ -259,21 +259,20 @@ module snoop_bus
   assign snoop_type_o  = (bs_q == B_SNOOP && cmd_q == BUS_RD) ? SNP_RD : SNP_INV;
   assign snoop_addr_o  = (bs_q == B_BINV) ? vaddr_q : line_addr;
 
-  // In the snoop cycle (B_SNOOP, B_BINV): did any sharer hold the line, and
-  // which one held it modified?
+  // The snooped L1s answer in the cycle after the snoop (B_SDATA, B_BDATA):
+  // did any hold the line, and the line of the one that held it modified.
   logic                 snp_shared;
   logic [N-1:0]         snp_dmask;
-  assign snp_shared = (snoop_valid_o & snoop_hit_i) != '0;
-  assign snp_dmask  = snoop_valid_o & snoop_dirty_i;
+  assign snp_shared = (starget_q & snoop_hit_i) != '0;
+  assign snp_dmask  = starget_q & snoop_dirty_i;
 
-  // In the next cycle (B_SDATA, B_BDATA): that L1's line.
   logic                 snp_dirty;
   logic [LINE_BITS-1:0] snp_line;
   always_comb begin
     snp_dirty = 1'b0;
     snp_line  = '0;
     for (int i = 0; i < int'(N); i++) begin
-      if (sdirty_q[i]) begin
+      if (snp_dmask[i]) begin
         snp_dirty = 1'b1;
         snp_line  = snoop_data_i[i];
       end
@@ -476,7 +475,7 @@ module snoop_bus
       dirty_q    <= 1'b0;
       line_q     <= '0;
       shared_q   <= 1'b0;
-      sdirty_q   <= '0;
+      starget_q  <= '0;
       lk_data    <= '0;
     end else begin
       bs_q <= bs_d;
@@ -506,17 +505,15 @@ module snoop_bus
             vline_q    <= vc_data;
           end
         end
-        B_BINV: sdirty_q <= snp_dmask;
+        B_BINV: starget_q <= snoop_valid_o;
         B_BDATA: if (snp_dirty) begin
           vdirty_q <= 1'b1;
           vline_q  <= snp_line;    // the L1's modified copy is the newest
         end
-        B_SNOOP: begin
-          shared_q <= snp_shared;
-          sdirty_q <= snp_dmask;
-        end
+        B_SNOOP: starget_q <= snoop_valid_o;
         B_SDATA: begin
           dirty_q  <= snp_dirty;
+          shared_q <= snp_shared;
           line_q   <= snp_line;
         end
         default: ;
@@ -528,14 +525,15 @@ module snoop_bus
   // --------------------------------------------------------------------
   // Simulation assertions
   // --------------------------------------------------------------------
+  // (The snooped L1s answer in B_SDATA / B_BDATA.)
   logic [N-1:0] a_dirty;
-  assign a_dirty = snoop_dirty_i & snoop_valid_o;
+  assign a_dirty = snp_dmask;
   always_ff @(posedge clk_i) begin
-    if (bs_q == B_SNOOP || bs_q == B_BINV) begin
+    if (bs_q == B_SDATA || bs_q == B_BDATA) begin
       assert ((a_dirty & (a_dirty - N'(1))) == '0)
         else $error("snoop_bus: more than one cache holds line %08x modified", snoop_addr_o);
     end
-    if (bs_q == B_SNOOP) begin
+    if (bs_q == B_SDATA) begin
       assert (!(cmd_q == BUS_UPGR && a_dirty != '0))
         else $error("snoop_bus: BUS_UPGR found a modified copy of %08x", line_addr);
     end

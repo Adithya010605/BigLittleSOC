@@ -46,30 +46,32 @@
 // SNOOP SIDE
 // ---------------------------------------------------------------------------
 // The bus snoops every other cache, for one cycle, at the start of each
-// coherent transaction. Hit and dirty are combinational, from a second read
-// port on the tag and state arrays; the state change happens at the end of
-// that cycle. A modified line's data is read out of the SRAM in that cycle
-// and reaches the bus in the next one (snoop_data_o). A core access is not
-// accepted in a snoop cycle, so the core and the snoop never use the arrays
-// in the same cycle.
+// coherent transaction. The snoop cycle reads the set's tags and data out of
+// the SRAMs; the next cycle (snp_q) compares the tags, answers the bus (hit,
+// dirty, and the line if it is modified) and changes the state at its end.
+// A core access is not accepted in a snoop cycle, and a request is never
+// looked up in an answer cycle, so the core and the snoop never use the
+// arrays in the same cycle, and a lookup always sees the snoop's new state.
 //
 // ---------------------------------------------------------------------------
 // THE DATA SRAM
 // ---------------------------------------------------------------------------
-// Tags and states are flip-flops, so every hit, miss and snoop decision is
-// made in one cycle exactly as before. The line data is a single-port SRAM
-// per way (sram_sp.sv): one access per cycle, read data valid in the next
-// cycle only, whole-line writes. Its users never meet in one cycle:
+// The states (I/S/M) are flip-flops: every decision reads them at once. The
+// tags and the line data are single-port SRAMs, one each per way
+// (sram_sp.sv): one access per cycle, read data valid in the next cycle
+// only, whole-word writes. Their users never meet in one cycle:
 //
 //   * a read of the request's set (C_IDLE) or of a line to flush (C_FLUSH),
 //     never in a snoop cycle;
-//   * a snoop's read of a modified line, in the snoop cycle;
-//   * a line write: a store hit (C_LOOK, never in a snoop cycle), a fill or
-//     a write-through update (bus done, never in a snoop cycle).
+//   * a snoop's read of its set, in the snoop cycle;
+//   * a write: a store hit's line (C_LOOK, never in a snoop cycle), a fill's
+//     tag and line or a write-through update (bus done, never in a snoop
+//     cycle). Invalidations only change the state.
 //
-// A line the controller needs while it waits for the bus -- a victim to
-// write back, its own copy for an upgrade or a write-through update -- is
-// kept in the line buffer (lb_q) from the cycle its read arrives.
+// What a request still needs while it waits for the bus -- a victim to write
+// back and its tag, its own copy for an upgrade or a write-through update --
+// is kept in the line buffer (lb_q, lb_tag_q) from the cycle its read
+// arrives, together with whether the lookup hit (look_hit_q).
 //
 // The bus is atomic: while this cache's own transaction is in flight, no
 // snoop reaches this cache. A request that is still waiting for the bus can
@@ -183,17 +185,21 @@ module l1_dcache
   `define L1_SLOT(a) a[2 +: WORD_SEL_W]
 
   // ====================================================================
-  // Arrays. Tags and states are flip-flops; only the states are reset, and
-  // they qualify the tags. The data is an SRAM per way (below).
+  // Arrays. The states are flip-flops (reset to I). The tags and the line
+  // data are an SRAM each, per way (below): rd_tag/rd_line are what they
+  // read in the previous cycle.
   // ====================================================================
-  tag_t                 tag_q   [WAYS][SETS];
-  msi_e                 state_q [WAYS][SETS];
+  msi_e                           state_q [WAYS][SETS];
+  logic [WAYS-1:0][TAG_W-1:0]     rd_tag;
+  logic [WAYS-1:0][LINE_BITS-1:0] rd_line;
+  logic [WAYS-1:0][TAG_W-1:0]     dbg_tag;
+  logic [WAYS-1:0][LINE_BITS-1:0] dbg_line;
 
   // ====================================================================
   // Lookups: the latched request, the snoop, the debug probe
   // ====================================================================
-  // The request's lookup is made on the latched request (rq_addr_q), in
-  // C_LOOK, the cycle its set's data arrives.
+  // The request's lookup is made in C_LOOK, the cycle its set's tags and
+  // data arrive, on the latched request (rq_addr_q).
   idx_t c_idx;
   logic c_hit;
   way_t c_way;
@@ -209,7 +215,7 @@ module l1_dcache
     c_inv_found = 1'b0;
     c_inv_way   = '0;
     for (int w = 0; w < int'(WAYS); w++) begin
-      if (state_q[w][c_idx] != MSI_I && tag_q[w][c_idx] == `L1_TAG(rq_addr_q)) begin
+      if (state_q[w][c_idx] != MSI_I && rd_tag[w] == `L1_TAG(rq_addr_q)) begin
         c_hit = 1'b1;
         c_way = way_t'(w);
       end
@@ -223,35 +229,43 @@ module l1_dcache
   logic c_cacheable;
   assign c_cacheable = core_addr_i < CACHEABLE_LIMIT;
 
-  // Snoop lookup
-  idx_t s_idx;
-  logic s_hit;
-  way_t s_way;
+  // Snoop lookup. The snoop cycle reads the set's tags and data; the next
+  // cycle (snp_q) compares, answers the bus and updates the state.
+  logic   snp_q;
+  idx_t   s_idx_q;
+  tag_t   s_tag_q;
+  snoop_e s_type_q;
+  logic   s_hit;
+  way_t   s_way;
   always_comb begin
-    s_idx = `L1_IDX(snoop_addr_i);
     s_hit = 1'b0;
     s_way = '0;
     for (int w = 0; w < int'(WAYS); w++) begin
-      if (state_q[w][s_idx] != MSI_I && tag_q[w][s_idx] == `L1_TAG(snoop_addr_i)) begin
+      if (state_q[w][s_idx_q] != MSI_I && rd_tag[w] == s_tag_q) begin
         s_hit = 1'b1;
         s_way = way_t'(w);
       end
     end
   end
 
-  assign snoop_hit_o   = snoop_valid_i && s_hit;
-  assign snoop_dirty_o = snoop_valid_i && s_hit && state_q[s_way][s_idx] == MSI_M;
+  assign snoop_hit_o   = snp_q && s_hit;
+  assign snoop_dirty_o = snp_q && s_hit && state_q[s_way][s_idx_q] == MSI_M;
+  assign snoop_data_o  = rd_line[s_way];
+
+  // A snoop is in progress: its cycle, or its answer's.
+  logic snp_busy;
+  assign snp_busy = snoop_valid_i || snp_q;
 
   // Debug probe
   idx_t d_idx;
   logic d_hit;
   way_t d_way;
+  assign d_idx = `L1_IDX(dbg_addr_i);
   always_comb begin
-    d_idx = `L1_IDX(dbg_addr_i);
     d_hit = 1'b0;
     d_way = '0;
     for (int w = 0; w < int'(WAYS); w++) begin
-      if (state_q[w][d_idx] != MSI_I && tag_q[w][d_idx] == `L1_TAG(dbg_addr_i)) begin
+      if (state_q[w][d_idx] != MSI_I && dbg_tag[w] == `L1_TAG(dbg_addr_i)) begin
         d_hit = 1'b1;
         d_way = way_t'(w);
       end
@@ -331,17 +345,24 @@ module l1_dcache
   assign rq_tag  = `L1_TAG(rq_addr_q);
   assign rq_slot = `L1_SLOT(rq_addr_q);
 
+  // What C_LOOK found, kept while the request waits for the bus: whether the
+  // line was in the cache, and in which way. Only this cache's own fills
+  // change a way's line, so the line is still there for as long as its state
+  // is not I.
+  logic look_hit_q;
+  way_t look_way_q;
+
   // Own copy of the latched request's line (write-through store update).
   logic r_hit;
   way_t r_way;
-  assign r_hit = c_hit;
-  assign r_way = c_way;
+  assign r_way = look_way_q;
+  assign r_hit = look_hit_q && state_q[r_way][rq_idx] != MSI_I;
 
   // The fill way still holds the requested line in S: a store can upgrade.
   logic fill_upgrade;
   assign fill_upgrade = WRITE_BACK && rq_we_q &&
                         state_q[fill_way_q][rq_idx] == MSI_S &&
-                        tag_q[fill_way_q][rq_idx] == rq_tag;
+                        look_hit_q;
 
   // ====================================================================
   // Control
@@ -349,7 +370,8 @@ module l1_dcache
   logic [NUM_EV-1:0]    fsm_events;
 
   // Array write port (core side). The snoop side has its own, below.
-  logic                 st_we;      // write state + tag
+  logic                 st_we;      // write state
+  logic                 tt_we;      // write tag (a fill)
   logic                 dt_we;      // write data
   way_t                 wr_way;
   idx_t                 wr_idx;
@@ -358,18 +380,18 @@ module l1_dcache
   logic [LINE_BITS-1:0] wr_data;
   logic [LINE_BITS-1:0] fill_line;
 
-  // Data SRAM read port (the write port is dt_we above), and what it read.
-  logic                           rd_en;      // read set rd_idx, every way
-  idx_t                           rd_idx;
-  logic                           snp_rd;     // a snoop's read of a modified line
-  logic [WAYS-1:0][LINE_BITS-1:0] rd_line;    // valid the cycle after a read
-  logic [WAYS-1:0][LINE_BITS-1:0] dbg_line;
+  // SRAM read port (the write ports are tt_we and dt_we above): read set
+  // rd_idx's tags and data, every way.
+  logic                 rd_en;
+  idx_t                 rd_idx;
+  logic                 snp_rd;     // a snoop's read of its set
 
-  // Line buffer: the line a waiting request still needs (lb_load: from the
-  // read that arrives this cycle, way lb_way).
+  // Line buffer: the line, and its tag, a waiting request still needs
+  // (lb_load: from the read that arrives this cycle, way lb_way).
   logic                 lb_load;
   way_t                 lb_way;
   logic [LINE_BITS-1:0] lb_q;
+  tag_t                 lb_tag_q;
 
   // The access is complete: respond, or hold.
   logic                 done_resp;
@@ -403,6 +425,7 @@ module l1_dcache
     bus_be_o      = '0;
 
     st_we         = 1'b0;
+    tt_we         = 1'b0;
     dt_we         = 1'b0;
     wr_way        = '0;
     wr_idx        = '0;
@@ -443,9 +466,9 @@ module l1_dcache
       end
 
       // ------------------------------------------------------------------
-      // The request's set has been read: hit or miss, from the tags and
-      // states. Whatever happens next, keep the line it works on: the hit
-      // line, or the victim.
+      // The request's set has been read: hit or miss, from its tags and
+      // states. Whatever happens next, keep the line it works on, and its
+      // tag: the hit line, or the victim.
       C_LOOK: begin
         lb_load = 1'b1;
         lb_way  = c_hit ? c_way : c_victim;
@@ -510,14 +533,13 @@ module l1_dcache
         end else begin
           bus_req_o   = 1'b1;
           bus_cmd_o   = BUS_WB;
-          bus_addr_o  = {tag_q[fill_way_q][rq_idx], rq_idx, OFFSET_W'(0)};
+          bus_addr_o  = {lb_tag_q, rq_idx, OFFSET_W'(0)};
           bus_wdata_o = lb_q;
           bus_be_o    = '1;
           if (bus_done_i) begin
             st_we    = 1'b1;
             wr_way   = fill_way_q;
             wr_idx   = rq_idx;
-            wr_tag   = tag_q[fill_way_q][rq_idx];
             wr_state = MSI_I;
             cs_d     = C_FILL;
             fsm_events[EV_WRITEBACK] = 1'b1;
@@ -539,6 +561,7 @@ module l1_dcache
           resp_rdata = line_word(fill_line, rq_slot);
           if (!bus_err_i) begin
             st_we    = 1'b1;
+            tt_we    = 1'b1;
             dt_we    = 1'b1;
             wr_way   = fill_way_q;
             wr_idx   = rq_idx;
@@ -605,12 +628,12 @@ module l1_dcache
       end
 
       // ------------------------------------------------------------------
-      // Flush walk. Lines are only written outside snoop cycles, so the
-      // snoop's own state update never collides with the walk's.
+      // Flush walk. Lines are only written while no snoop is in progress,
+      // so the snoop's own state update never collides with the walk's.
       C_FLUSH: begin
         if (!flush_i) begin
           cs_d = C_IDLE;                        // abandoned
-        end else if (!snoop_valid_i) begin
+        end else if (!snp_busy) begin
           if (WRITE_BACK && state_q[fl_way_q][fl_idx_q] == MSI_M) begin
             cs_d = C_FRD;
             rd_en  = 1'b1;
@@ -619,7 +642,6 @@ module l1_dcache
             st_we    = state_q[fl_way_q][fl_idx_q] != MSI_I;
             wr_way   = fl_way_q;
             wr_idx   = fl_idx_q;
-            wr_tag   = tag_q[fl_way_q][fl_idx_q];
             wr_state = MSI_I;
             fl_step  = 1'b1;
             if (fl_last) cs_d = C_FLUSHED;
@@ -640,14 +662,13 @@ module l1_dcache
         end else begin
           bus_req_o   = 1'b1;
           bus_cmd_o   = BUS_WB;
-          bus_addr_o  = {tag_q[fl_way_q][fl_idx_q], fl_idx_q, OFFSET_W'(0)};
+          bus_addr_o  = {lb_tag_q, fl_idx_q, OFFSET_W'(0)};
           bus_wdata_o = lb_q;
           bus_be_o    = '1;
           if (bus_done_i) begin
             st_we    = 1'b1;
             wr_way   = fl_way_q;
             wr_idx   = fl_idx_q;
-            wr_tag   = tag_q[fl_way_q][fl_idx_q];
             wr_state = MSI_I;
             fl_step  = 1'b1;
             cs_d     = fl_last ? C_FLUSHED : C_FLUSH;
@@ -682,22 +703,43 @@ module l1_dcache
   end
 
   // ====================================================================
-  // Data SRAM, one per way. A write uses its way's SRAM; a read reads
-  // every way's at one set.
+  // Tag and data SRAMs, one each per way. A fill writes its way's tag and
+  // data; a line update writes its way's data; a read reads every way's tag
+  // and data at one set: the request's (C_IDLE), a line to flush (C_FLUSH),
+  // or a snoop's (its whole set: whether it hits is known next cycle).
   // ====================================================================
-  assign snp_rd = snoop_dirty_o;
+  assign snp_rd = snoop_valid_i;
 
-  for (genvar w = 0; w < int'(WAYS); w++) begin : g_data
-    logic wr_this;
-    assign wr_this = dt_we && wr_way == way_t'(w);
+  idx_t rd_set;
+  assign rd_set = snp_rd ? `L1_IDX(snoop_addr_i) : rd_idx;
+
+  for (genvar w = 0; w < int'(WAYS); w++) begin : g_way
+    logic tag_wr, data_wr;
+    assign tag_wr  = tt_we && wr_way == way_t'(w);
+    assign data_wr = dt_we && wr_way == way_t'(w);
+
+    sram_sp #(
+      .DEPTH (SETS),
+      .WIDTH (TAG_W)
+    ) u_tag (
+      .clk_i       (clk_i),
+      .ce_i        (tag_wr || rd_en || snp_rd),
+      .we_i        (tag_wr),
+      .addr_i      (tag_wr ? wr_idx : rd_set),
+      .wdata_i     (wr_tag),
+      .rdata_o     (rd_tag[w]),
+      .dbg_addr_i  (d_idx),
+      .dbg_rdata_o (dbg_tag[w])
+    );
+
     sram_sp #(
       .DEPTH (SETS),
       .WIDTH (LINE_BITS)
     ) u_data (
       .clk_i       (clk_i),
-      .ce_i        (wr_this || rd_en || snp_rd),
-      .we_i        (wr_this),
-      .addr_i      (wr_this ? wr_idx : (snp_rd ? s_idx : rd_idx)),
+      .ce_i        (data_wr || rd_en || snp_rd),
+      .we_i        (data_wr),
+      .addr_i      (data_wr ? wr_idx : rd_set),
       .wdata_i     (wr_data),
       .rdata_o     (rd_line[w]),
       .dbg_addr_i  (d_idx),
@@ -705,15 +747,11 @@ module l1_dcache
     );
   end
 
-  // A snooped modified line reaches the bus in the cycle after the snoop.
-  way_t s_way_q;
   always_ff @(posedge clk_i) begin
-    if (snp_rd) s_way_q <= s_way;
-  end
-  assign snoop_data_o = rd_line[s_way_q];
-
-  always_ff @(posedge clk_i) begin
-    if (lb_load) lb_q <= rd_line[lb_way];
+    if (lb_load) begin
+      lb_q     <= rd_line[lb_way];
+      lb_tag_q <= rd_tag[lb_way];
+    end
   end
 
 `ifndef SYNTHESIS
@@ -749,11 +787,11 @@ module l1_dcache
   always_comb begin
     snp_upd  = 1'b0;
     snp_next = MSI_I;
-    if (snoop_valid_i && s_hit) begin
-      if (snoop_type_i == SNP_INV) begin
+    if (snp_q && s_hit) begin
+      if (s_type_q == SNP_INV) begin
         snp_upd  = 1'b1;
         snp_next = MSI_I;
-      end else if (state_q[s_way][s_idx] == MSI_M) begin
+      end else if (state_q[s_way][s_idx_q] == MSI_M) begin
         snp_upd  = 1'b1;
         snp_next = MSI_S;
       end
@@ -784,12 +822,28 @@ module l1_dcache
       hold_err_q   <= 1'b0;
       fl_idx_q     <= '0;
       fl_way_q     <= '0;
+      look_hit_q   <= 1'b0;
+      look_way_q   <= '0;
+      snp_q        <= 1'b0;
+      s_idx_q      <= '0;
+      s_tag_q      <= '0;
+      s_type_q     <= SNP_RD;
       for (int w = 0; w < int'(WAYS); w++) begin
         for (int s = 0; s < int'(SETS); s++) state_q[w][s] <= MSI_I;
       end
     end else begin
       cs_q       <= cs_d;
       fill_way_q <= fill_way_d;
+      if (cs_q == C_LOOK) begin
+        look_hit_q <= c_hit;
+        look_way_q <= c_way;
+      end
+      snp_q <= snoop_valid_i;
+      if (snoop_valid_i) begin
+        s_idx_q  <= `L1_IDX(snoop_addr_i);
+        s_tag_q  <= `L1_TAG(snoop_addr_i);
+        s_type_q <= snoop_type_i;
+      end
       if (accept) begin
         rq_addr_q  <= core_addr_i;
         rq_we_q    <= core_we_i;
@@ -812,12 +866,8 @@ module l1_dcache
         end
       end
       if (st_we)   state_q[wr_way][wr_idx] <= wr_state;
-      if (snp_upd) state_q[s_way][s_idx]   <= snp_next;
+      if (snp_upd) state_q[s_way][s_idx_q] <= snp_next;
     end
-  end
-
-  always_ff @(posedge clk_i) begin
-    if (st_we) tag_q[wr_way][wr_idx]  <= wr_tag;
   end
 
 `ifndef SYNTHESIS
@@ -832,9 +882,13 @@ module l1_dcache
         else $error("l1_dcache: snooped in the cycle its own transaction completed");
       assert (!(snp_upd && (st_we || dt_we)))
         else $error("l1_dcache: snoop and core updated the arrays in one cycle");
-      // The data SRAM has one port: its users never meet in one cycle.
-      assert (!(rd_en && snp_rd) && !(rd_en && dt_we) && !(snp_rd && dt_we))
-        else $error("l1_dcache: two accesses to the data SRAM in one cycle");
+      // The SRAMs have one port: their users never meet in one cycle.
+      assert (!(rd_en && snp_rd) && !(rd_en && (dt_we || tt_we)) &&
+              !(snp_rd && (dt_we || tt_we)))
+        else $error("l1_dcache: two accesses to the SRAMs in one cycle");
+      // A request is never looked up while a snoop's state change is due.
+      assert (!(cs_q == C_LOOK && snp_q))
+        else $error("l1_dcache: lookup in a snoop's answer cycle");
       // The PMU flushes only the caches of halted cores.
       assert (!(cs_q == C_IDLE && flush_i && core_req_i))
         else $error("l1_dcache: flush requested with a core access pending");
