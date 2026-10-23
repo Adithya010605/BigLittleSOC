@@ -43,3 +43,6 @@ docs/physical_design_plan.md
 docs/pd_flow_guide.md
 docs/soc_explained.md
 scripts/orfs_shell.sh
+
+# Raw OpenROAD-flow-scripts runs (databases, GDS, logs): regenerated, never committed
+pd/orfs/
