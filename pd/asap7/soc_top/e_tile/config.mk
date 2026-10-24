@@ -1,6 +1,6 @@
 # ============================================================================
 # E-tile: one E-core with its L1 caches (rtl/soc/e_tile.sv), ASAP7.
-# Run 2: hand-placed macros, fixed size, clock pin placed, 1450 ps.
+# Run 3: run 2's floorplan and pins, 1000 ps, timing-driven synthesis.
 # ============================================================================
 
 # <top>_<block>: the top level finds the tile by this name.

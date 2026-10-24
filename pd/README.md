@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done (GDS, timing not met at 1450 ps) | — | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: run 2 (1450 ps), run 3 (1000 ps, fair comparison) | next | — |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -301,14 +301,62 @@ are near the centre: core gate (69.9, 59.1), cache gate (72.5, 72.4).
    in the SDC, and pass the sweep's period to synthesis too
    (`ABC_CLOCK_PERIOD_IN_PS`).
 
+### 8. E-tile run 3: run 2's floorplan at 1000 ps, SDC fixed (2026-10-25)
+
+**What changed, and why:**
+
+| Change | Why |
+|---|---|
+| **SDC: the period is a plain number** on the first `set clk_period` line (`set clk_period 1000`); the sweep's override is on a separate `if` line | ORFS reads the synthesis target from the first `set clk_period <n>` line. The old `[expr …]` gave it the text `[expr`. |
+| **Clock back to 1000 ps** | The same target as run 1, so the two floorplans are compared fairly |
+| Floorplan, pins, halo, tile size | **Unchanged from run 2** |
+
+**Checked:** `clock_period.txt` now holds `1000`, and synthesis (ABC) ran with
+`-D 1000`. Run 1's log says `Setting clock period to [expr`.
+
+**Finding about the SDC fix:** the netlist came out **identical** (37,613 cells,
+10,594.502340 µm², to the last digit). ABC made the same choices with and
+without the target. The fix was needed, but it hadn't changed any earlier
+result.
+
+**Result, same 1000 ps target as run 1:**
+
+| Metric | Run 1 (automatic floorplan) | Run 3 (hand floorplan) | Change |
+|---|---|---|---|
+| Minimum period / fmax | 1392 ps / 719 MHz | **1363 ps / 734 MHz** | **−29 ps, 2% faster** |
+| Setup WNS | −392 ps | −363 ps | better |
+| Setup TNS | −126.1 ns | −97.9 ns | −22% |
+| Failing setup endpoints | 954 | 934 | |
+| Die | 165.5 × 165.5 µm | 145 × 145 µm | −23% area |
+| Utilisation | 42% | 55% | |
+| Routed wirelength | 391,221 µm | 278,122 µm | −29% |
+| Power at 1 GHz | 26.6 mW | 26.2 mW | |
+| Hold | +172 ps, clean | +196 ps, clean | |
+| Clock skew (setup) | 53.8 ps | 51.9 ps | |
+| Route DRC / antenna | 0 / 0 | 0 / 0 | |
+
+Pictures: `results/e_tile/run3/final_*.webp`.
+
+**Conclusions:**
+1. **The hand floorplan is better on every count:** smaller, less wire,
+   slightly faster, slightly less power, still clean. It stays as the E-tile
+   floorplan.
+2. **Run 2's worse minimum period (1625 ps) came from its relaxed 1450 ps
+   target,** not from the floorplan. After placement, timing repair works only
+   as hard as the target demands. Compare timing only at equal targets.
+3. **The E-tile's speed limit is its logic, not its layout.** The worst path is
+   still the E-core's branch decision (EX ALU result forwarded into ID's
+   compare, then the next-PC mux), at about 1.36 ns. A floorplan moved it by
+   2%. Getting much faster needs the synthesis options or the RTL change
+   (branch-after-ALU stall) from the plan.
+
 ---
 
 ## Open items
 
 | Item | Why it matters | When |
 |---|---|---|
-| SDC period not read by synthesis (`[expr` extracted) | Synthesis has not been timing-driven in any run so far | Next run |
-| E-core branch/next-PC path (1.4–1.6 ns) | Sets the E-tile's fmax | During the clock sweep |
+| E-core branch/next-PC path (~1.36 ns after run 3) | Sets the E-tile's fmax; layout alone gained only 2% | Synthesis options, then the branch-after-ALU stall (RTL), before the sweep |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
 | No reset synchroniser | Reset-release timing isn't checked; a production chip would add one | Documented limitation |

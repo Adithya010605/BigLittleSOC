@@ -2,9 +2,12 @@
 # E-tile timing constraints. Time unit: ps (ASAP7).
 # ============================================================================
 
-# Clock period: 1450 ps (about 690 MHz) by default, just above run 1's
-# 1392 ps limit; the clock sweep sets CLK_PERIOD_PS.
-set clk_period [expr {[info exists ::env(CLK_PERIOD_PS)] ? $::env(CLK_PERIOD_PS) : 1450}]
+# Clock period, in ps. Keep it a plain number on this first line: ORFS reads
+# the period for timing-driven synthesis from the first `set clk_period <n>`
+# line (scripts/variables.mk). The clock sweep overrides it with
+# CLK_PERIOD_PS, and must then also pass ABC_CLOCK_PERIOD_IN_PS=<n> to make.
+set clk_period 1000
+if {[info exists ::env(CLK_PERIOD_PS)]} { set clk_period $::env(CLK_PERIOD_PS) }
 create_clock -name clk -period $clk_period [get_ports clk_i]
 
 # Signals entering or leaving the tile have 40% of the cycle outside it
