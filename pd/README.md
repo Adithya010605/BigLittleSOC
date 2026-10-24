@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | next | — | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done (GDS, timing not met at 1450 ps) | — | — |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -237,13 +237,78 @@ has shorter wires.
   (e.g. 1400–1500 ps) so the floorplan is judged on congestion and wirelength
   rather than on an impossible clock.
 
+### 7. E-tile run 2: hand macro placement, smaller tile, clock pin (2026-10-24)
+
+**What changed from run 1, and why:**
+
+| Change | Why |
+|---|---|
+| **Tag SRAMs stacked above their own data SRAMs** (`macro_place.tcl`): L1 data cache on the west edge (mirrored, pins east), L1 instruction cache on the east edge (pins west); tags 5 µm above the data, on the pin side | Run 1 left both tag macros at the top left, far from their data. Tag and data of a cache are read together by the same controller, so their pins should sit on one line next to it. Macros on the edges keep the middle as one region for the logic. |
+| **Fixed 145 × 145 µm tile** (was 165.5 µm automatic at 40%) | Run 1 had large empty areas; a smaller tile shortens wires |
+| **5 µm macro halo** | Keeps standard cells off the macros' edges (pin access) |
+| **Clock pin at the middle of the top edge** (`io.tcl`) | In run 1 the clock entered on the left edge and crossed the tile to the clock gates near the centre |
+| **Clock 1450 ps** (was 1000 ps) | Just above run 1's 1392 ps limit, so the floorplan is judged on wiring rather than an unreachable target |
+
+**Checked:** the 4 macros are `FIXED` exactly where `macro_place.tcl` put them,
+and the automatic macro placer reported "No unfixed macros… Skipping". The
+clock pin is at (70.1, 145.0) µm, the middle of the top edge. Both clock gates
+are near the centre: core gate (69.9, 59.1), cache gate (72.5, 72.4).
+
+**Result, against run 1:**
+
+| Metric | Run 1 (auto, 1000 ps) | Run 2 (hand, 1450 ps) | Change |
+|---|---|---|---|
+| Die | 165.5 × 165.5 µm | 145 × 145 µm | **−23% area** |
+| Utilisation | 42% | 54% | |
+| Routed wirelength | 391,221 µm | 272,174 µm | **−30%** |
+| Routing tracks used (global route) | 19.8% | 18.9% | no overflow in either |
+| Route DRC / antenna | 0 / 0 | 0 / 0 | |
+| Setup WNS | −392 ps (at 1000 ps) | −175 ps (at 1450 ps) | not comparable: different targets |
+| Failing setup endpoints | 954 | 94 | |
+| Minimum period from this run | 1392 ps | **1625 ps** | **worse**, see below |
+| Hold | 0 violations, +172 ps | 0 violations, +384 ps | |
+| Clock skew (setup) | 53.8 ps | 55.8 ps | same |
+| Power | 26.6 mW at 1 GHz | 17.6 mW at 690 MHz | ≈4% less energy per cycle |
+| Runtime / peak memory | 31 min / 9.2 GB | 24 min / 7.4 GB | |
+
+**Pictures:** ORFS's own images for both runs are now saved side by side
+(`results/e_tile/run1/final_*.webp`, `results/e_tile/run2/final_*.webp`):
+`final_all`, `final_placement`, `final_routing`, `final_congestion`,
+`final_worst_path`, `final_clocks`.
+- [Run 2 placement](results/e_tile/run2/final_placement.webp): macros on the
+  edges with the tags on top, all pins facing the centre; the cells fill the
+  channel between the two macro columns.
+- [Run 2 congestion](results/e_tile/run2/final_congestion.webp): less red than
+  run 1. The remaining hot spots are a band in the lower middle and the data
+  macros' inner (pin) edges.
+- The strips beside the tag macros, outside them (above each data macro), stay
+  empty: no logic wants to be there. That's about 2 × 25 × 45 µm unused.
+
+**Found:**
+1. **The floorplan helped the wiring a lot:** 23% smaller, 30% less wire, about
+   4% less energy per cycle, still 0 DRC.
+2. **The minimum period got worse (1392 → 1625 ps), and this run can't tell us
+   whether the floorplan is to blame.** The two runs had different clock
+   targets, and timing repair after placement works only as hard as the target
+   asks: at 1000 ps every path above 1000 ps was worked on; at 1450 ps far
+   fewer. The fair test is the same floorplan at the same target as run 1.
+3. **Synthesis never received the clock target, in either run.** ORFS reads the
+   period from the SDC by looking for `set clk_period <number>`. The SDC
+   computes it (`set clk_period [expr …]`), so ORFS read the text `[expr`, and
+   synthesis was not timing-driven. Both runs got the identical netlist (37,613
+   cells), so run 1 vs run 2 is still fair, but every run so far lost
+   timing-driven synthesis. **To fix next:** write the period as a plain number
+   in the SDC, and pass the sweep's period to synthesis too
+   (`ABC_CLOCK_PERIOD_IN_PS`).
+
 ---
 
 ## Open items
 
 | Item | Why it matters | When |
 |---|---|---|
-| E-core branch/next-PC path (~1.6 ns) | Sets the E-tile's fmax | During the clock sweep |
+| SDC period not read by synthesis (`[expr` extracted) | Synthesis has not been timing-driven in any run so far | Next run |
+| E-core branch/next-PC path (1.4–1.6 ns) | Sets the E-tile's fmax | During the clock sweep |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
 | No reset synchroniser | Reset-release timing isn't checked; a production chip would add one | Documented limitation |
