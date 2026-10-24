@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: run 2 (1450 ps), run 3 (1000 ps, fair comparison) | next | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | next | — |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -350,13 +350,78 @@ Pictures: `results/e_tile/run3/final_*.webp`.
    2%. Getting much faster needs the synthesis options or the RTL change
    (branch-after-ALU stall) from the plan.
 
+### 9. Decisions after run 3, and run 4: max fanout limit (2026-10-25)
+
+**Decided: no parallel-prefix adder option (`SWAP_ARITH_OPERATORS`) for now.**
+- **What it is:** an ORFS option that builds adders and comparators as
+  parallel-prefix trees instead of full-adder chains. It would shorten the
+  E-core's branch path.
+- **Why not:** ORFS's own scripts call the underlying feature "not yet stable",
+  and it requires switching the whole flow to hierarchical mode
+  (`OPENROAD_HIERARCHICAL=1`). For a learning project, a stable, understood
+  flow matters more than a few percent of speed. About 730 MHz is accepted for
+  the E-tile for now; this can be revisited later.
+- **Incident:** the edit adding this option was applied, and its synthesis
+  started, even though the step was cancelled. Found before any result was
+  used: both run-4 containers were stopped, the option removed from
+  `config.mk`, and the partial run-4 output deleted.
+
+**Checked on run 3, beyond timing and routing:**
+
+| Check | Run 3 | Verdict |
+|---|---|---|
+| IR drop (power-grid voltage loss) | worst 5.1 mV of 0.77 V (0.7%), average 0.29 mV | ✓ far inside the usual 5–10% budget |
+| Max capacitance / max fanout violations | 0 / 0 | ✓ (no fanout limit was set, so the fanout check had nothing to flag) |
+| **Max slew violations** | **350** (run 1: 341, run 2: 857) | ✗ see below |
+
+**Found: one net causes the slew violations.** A single buffer
+(`place11221`, `BUFx6f`) drives **131 gate inputs**. Its edges take about
+456 ps against the 320 ps slew limit, and every input on that net counts as a
+violation. It's most likely one of the cache's wide select or enable signals,
+which fans out across a 256-bit line. Every run has it, so it isn't caused by
+the floorplan.
+
+**Run 4, what changed and why:**
+
+| Change | Why |
+|---|---|
+| `set_max_fanout 32 [current_design]` in `constraint.sdc` | With no fanout limit, the repair step left one buffer driving 131 inputs. With a limit, it has to split such nets into a buffer tree, which shortens each edge's transition. |
+| Everything else | **Unchanged from run 3** (floorplan, pins, 1000 ps), so any difference comes from the fanout limit |
+
+**Expected:** the slew violations drop to (near) zero; timing may improve a
+little, since slow edges also slow down the gates they drive.
+
+**Result:**
+
+| Metric | Run 3 | Run 4 (max fanout 32) |
+|---|---|---|
+| **Max-slew violations** | **350** | **0** ✓ |
+| Minimum period / fmax | 1363 ps / 734 MHz | **1349 ps / 741 MHz** |
+| Setup TNS | −97.9 ns | −93.7 ns |
+| Failing setup endpoints | 934 | 929 |
+| Hold | +196 ps, clean | +234 ps, clean |
+| Design area | 11,250 µm² | 11,258 µm² (+8 µm² of buffers) |
+| Wirelength | 278,122 µm | 275,974 µm |
+| Power at 1 GHz | 26.2 mW | 26.1 mW |
+| Worst IR drop | 4.9 mV | 4.7 mV |
+| DRC / antenna / max cap / max fanout | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+
+Pictures: `results/e_tile/run4/final_*.webp`.
+
+**Conclusion:** a one-line constraint removed every slew violation, for 8 µm²
+of extra buffers, and gave a little timing back (about 1%). Run 4 is the
+cleanest E-tile so far: every electrical check passes, and only setup at
+1000 ps fails, because of the E-core's logic. It is the E-tile's current
+best configuration.
+
 ---
 
 ## Open items
 
 | Item | Why it matters | When |
 |---|---|---|
-| E-core branch/next-PC path (~1.36 ns after run 3) | Sets the E-tile's fmax; layout alone gained only 2% | Synthesis options, then the branch-after-ALU stall (RTL), before the sweep |
+| E-core branch/next-PC path (~1.35 ns after run 4) | Sets the E-tile's fmax; layout alone gained only 2%. Faster adders skipped for now (unstable option). | Optional: branch-after-ALU stall (RTL); otherwise accept ~730 MHz |
+| Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
 | No reset synchroniser | Reset-release timing isn't checked; a production chip would add one | Documented limitation |

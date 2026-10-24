@@ -15,3 +15,9 @@ create_clock -name clk -period $clk_period [get_ports clk_i]
 set io_budget [expr {0.4 * $clk_period}]
 set_input_delay  $io_budget -clock clk [delete_from_list [all_inputs] [get_ports clk_i]]
 set_output_delay $io_budget -clock clk [all_outputs]
+
+# No driver may drive more than 32 inputs. Without a limit, one buffer drove
+# 131 gate inputs (a wide cache select signal): its edges took about 456 ps
+# against the 320 ps slew limit, 350 max-slew violations. With the limit,
+# timing repair builds a buffer tree for such nets.
+set_max_fanout 32 [current_design]

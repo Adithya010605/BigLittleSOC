@@ -1,6 +1,6 @@
 # ============================================================================
 # E-tile: one E-core with its L1 caches (rtl/soc/e_tile.sv), ASAP7.
-# Run 3: run 2's floorplan and pins, 1000 ps, timing-driven synthesis.
+# Run 4: run 3 (hand floorplan, 1000 ps) + max fanout 32 in the SDC.
 # ============================================================================
 
 # <top>_<block>: the top level finds the tile by this name.
