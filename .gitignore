@@ -42,6 +42,7 @@ docs/presentation_alu_csr_fetch.md
 docs/physical_design_plan.md
 docs/pd_flow_guide.md
 docs/soc_explained.md
+docs/pd_notes.md
 scripts/orfs_shell.sh
 
 # Raw OpenROAD-flow-scripts runs (databases, GDS, logs): regenerated, never committed
