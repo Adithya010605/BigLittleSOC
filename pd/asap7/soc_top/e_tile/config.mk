@@ -1,6 +1,6 @@
 # ============================================================================
 # E-tile: one E-core with its L1 caches (rtl/soc/e_tile.sv), ASAP7.
-# Run 1: automatic floorplan, relaxed clock -- area and a baseline.
+# Run 2: hand-placed macros, fixed size, clock pin placed, 1450 ps.
 # ============================================================================
 
 # <top>_<block>: the top level finds the tile by this name.
@@ -30,6 +30,17 @@ export ADDITIONAL_LEFS = $(PLATFORM_DIR)/lef/fakeram7_256x256.lef \
 export ADDITIONAL_LIBS = $(PLATFORM_DIR)/lib/NLDM/fakeram7_256x256.lib \
                          $(PLATFORM_DIR)/lib/NLDM/fakeram7_256x32.lib
 
-# ---- Floorplan: automatic for run 1 ----
-export CORE_UTILIZATION = 40
-export PLACE_DENSITY    = 0.60
+# ---- Floorplan (run 2) ----
+# Fixed size: 145 x 145 um (run 1 was 165.5 um at 40% utilisation; this is
+# about 55%). The core is inset by about 1 um, on the placement grid.
+export DIE_AREA         = 0 0 145 145
+export CORE_AREA        = 1.026 1.08 143.964 143.91
+export PLACE_DENSITY    = 0.65
+
+# Macros placed by hand (tags stacked on their data, pins facing the
+# logic), with a 5 um halo kept free of standard cells.
+export MACRO_PLACEMENT_TCL = /workspace/pd/asap7/soc_top/e_tile/macro_place.tcl
+export MACRO_PLACE_HALO    = 5 5
+
+# Pins: the clock in the middle of the top edge; the rest automatic.
+export IO_CONSTRAINTS = /workspace/pd/asap7/soc_top/e_tile/io.tcl

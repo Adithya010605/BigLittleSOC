@@ -2,8 +2,9 @@
 # E-tile timing constraints. Time unit: ps (ASAP7).
 # ============================================================================
 
-# Clock period: 1000 ps (1 GHz) by default; the clock sweep sets CLK_PERIOD_PS.
-set clk_period [expr {[info exists ::env(CLK_PERIOD_PS)] ? $::env(CLK_PERIOD_PS) : 1000}]
+# Clock period: 1450 ps (about 690 MHz) by default, just above run 1's
+# 1392 ps limit; the clock sweep sets CLK_PERIOD_PS.
+set clk_period [expr {[info exists ::env(CLK_PERIOD_PS)] ? $::env(CLK_PERIOD_PS) : 1450}]
 create_clock -name clk -period $clk_period [get_ports clk_i]
 
 # Signals entering or leaving the tile have 40% of the cycle outside it
