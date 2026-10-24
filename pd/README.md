@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | in progress (attempt 3) | — | — | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | next | — | — |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -147,7 +147,95 @@ stay flip-flops.
 failed"), because `config.mk` listed only the 256×256 macro's files. Fixed by
 adding the 256×32 files.
 
-### 6. E-tile run 1, attempt 3 (2026-10-23): in progress
+### 6. E-tile run 1, attempt 3: complete (2026-10-23)
+
+**Setup:** unchanged: automatic floorplan, 40% utilisation, density 0.6, 1000 ps
+clock; routing with 12 threads (`NUM_CORES=12`).
+
+**Result:** the full flow finished, with a routed GDS (`6_final.gds`), in about
+31 minutes. Peak memory was 9.2 GB, so it now fits in the machine's 15 GB.
+
+| Metric | Value |
+|---|---|
+| Die | 165.5 × 165.5 µm (core 26,701 µm²) |
+| Design area (cells + macros) | 11,280 µm², 42% utilisation |
+| Macros | 4: 2 data (`fakeram7_256x256`), 2 tag (`fakeram7_256x32`) |
+| Routed wirelength | 391,221 µm |
+| Route DRC errors | **0** |
+| Antenna violations | **0** |
+| Setup at 1000 ps | **WNS −391.6 ps**, TNS −126,082 ps, 954 failing endpoints |
+| Hold | **0 violations**; worst hold slack **+172 ps** (reset input → an L1 state flip-flop) |
+| Minimum period (this run) | **1391.7 ps → fmax ≈ 719 MHz** |
+| Clock skew (setup) | 53.8 ps |
+| Power at 1 GHz (default activity) | 26.6 mW: combinational 52%, macros 23%, clock 12%, sequential 12% |
+
+**Where the automatic placer put the macros:** the two data macros in the
+**bottom-left and bottom-right corners**, the two tag macros **together at the
+top left**. Each cache's tags therefore sit far from their own data, which run
+2's hand floorplan should fix.
+
+**Setup vs hold:**
+- **Setup fails at 1000 ps** by 392 ps: the slowest path needs about 1392 ps.
+  A slower clock fixes this, or a shorter path in the RTL.
+- **Hold is clean,** with +172 ps of margin. Hold doesn't depend on the clock
+  period, so a hold failure would mean the tile can't work at any speed. With
+  hold clean, the only open question is how fast the tile can run.
+
+**Clock gates and the clock tree:** both `ICGx1_ASAP7_75t_R` cells were placed,
+near the centre of the 165.5 µm die, and the clock tree was built **through**
+them:
+
+| Clock gate | Instance | Position (µm) |
+|---|---|---|
+| Core clock gate | `u_cg.u_icg` | (84.0, 108.0) |
+| Cache clock gate | `u_l1.u_cg.u_icg` | (74.6, 84.5) |
+
+```
+clk_i (tile clock pin) ── 2 sinks: the two clock gates
+   ├──► core clock gate  ──► core_clk    ──► 2,025 flip-flops (the E-core)
+   └──► cache clock gate ──► cache clock ─┬─► 4 SRAM macros (2 data, 2 tag)
+                                          └─► 1,832 flip-flops (cache states, controllers)
+```
+
+So stopping the core's gate (sleep, park) stops all of the core's flip-flops,
+and stopping the cache's gate (cluster off) stops the caches. Placing the gates
+centrally keeps each sub-tree short and balanced, which is part of why the
+setup skew is only 54 ps.
+
+**Pictures** (OpenROAD GUI, saved in `results/e_tile/run1/`):
+
+| Picture | What it shows |
+|---|---|
+| [Macro placement](results/e_tile/run1/macro_placement.png) | The automatic placer's choice: the two **data** macros (`..u_data..u_ram`, 33 × 84 µm) in the **bottom-left and bottom-right corners**, with their pins turned inward (left one flipped). The two thin **tag** macros side by side at the **top left**: each cache's tags are far from its own data. |
+| [Routing congestion](results/e_tile/run1/routing_congestion.png) | Red (busy) over and along the **inner edges of the data macros**, where every line-data pin is reached, and in the column of logic **between the two data macros**. The logic in the middle is yellow-orange; the empty right and top areas are blue/green (idle). It routed with 0 DRC errors, but these are the hot spots to relieve in run 2. |
+| [Layout](results/e_tile/run1/layout.png) | Cells (red) bunched in a **cluster around the centre and top**, a thin band between the data macros, and large empty areas on the right and the top. Pins on the left, right and top edges, wherever the tool put them. |
+| [Critical path](results/e_tile/run1/critical_path.png) | The worst setup path drawn on the layout: launch clock (cyan) from the clock pin on the **left edge** into the middle, the data path through the E-core logic in the **centre**, capture (green) nearby. Start `u_core.u_ex_stage.idex_ctrl_o[22]`, end `u_core.u_if_stage.pc_q[28]`: the branch → next-PC path. The top of the list is all the same start point into different PC bits. |
+
+**For run 2's floorplan, from these pictures:**
+1. **Put each tag macro next to its own data macro.** Tag and data are read
+   together every access, by the same cache controller.
+2. **Give the data macros' pin edges more room:** a bigger halo on the pin side,
+   or partial blockages there.
+3. **Fix the tile size smaller.** The large empty areas and 42% utilisation mean
+   the die can shrink, which also shortens wires.
+4. **Place the pins deliberately** (bus/snoop on one edge, PMU on another,
+   clock central) instead of wherever the tool put them. The clock currently
+   enters on the left edge and travels across the tile.
+
+**Worst path:** the same as attempt 1. E-core execute stage
+(`u_ex_stage.idex_ctrl_o`) → fetch stage's PC (`u_if_stage.pc_q`): the branch
+decision and next-PC logic, 1,596 ps of data delay. It's in the E-core itself,
+not the caches. It improved from −628 ps to −392 ps, because the smaller tile
+has shorter wires.
+
+**What this tells us:**
+- The tile routes cleanly at 42% utilisation, so there's room to make it
+  smaller in run 2.
+- The E-core's fmax is about 720 MHz as built. The branch/next-PC path is the
+  target for the clock sweep and any RTL fix.
+- 1000 ps is too fast for this tile. Run 2 should use a clock it can meet
+  (e.g. 1400–1500 ps) so the floorplan is judged on congestion and wirelength
+  rather than on an impossible clock.
 
 ---
 
