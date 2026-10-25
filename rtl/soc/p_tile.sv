@@ -11,8 +11,10 @@
 //
 // Everything outside the tile reaches it through its ports: the PMU (clock
 // enables, flush, hart number, halt and debug port, interrupts), the snooping
-// bus (one bus and snoop port per cache: [0] data, [1] instruction), and the
-// testbench's probes and RVFI trace, which synthesis leaves unbuilt.
+// bus (one bus and snoop port per cache: [0] data, [1] instruction), and, in
+// simulation only, the testbench's probes and RVFI trace. In synthesis those
+// are not ports at all: the tile is laid out on its own as a hard block, so a
+// port it has becomes a pin of every copy, even when nothing outside uses it.
 //
 // e_tile.sv is the same tile around an E-core.
 // ============================================================================
@@ -67,8 +69,9 @@ module p_tile
   output logic     [1:0]                 snoop_hit_o,
   output logic     [1:0]                 snoop_dirty_o,
   output logic     [1:0][LINE_BITS-1:0]  snoop_data_o,
-  output logic     [1:0][NUM_EV-1:0]     events_o,
-
+  output logic     [1:0][NUM_EV-1:0]     events_o
+`ifndef SYNTHESIS
+  ,
   // ---- Testbench: cache probe, performed-access monitor, RVFI ----
   input  logic     [31:0]                l1_dbg_addr_i,
   output msi_e     [1:0]                 l1_dbg_state_o,
@@ -101,7 +104,56 @@ module p_tile
   output logic [3:0]                     rvfi_mem_wmask_o,
   output logic [31:0]                    rvfi_mem_rdata_o,
   output logic [31:0]                    rvfi_mem_wdata_o
+`endif
 );
+
+`ifdef SYNTHESIS
+  // The testbench ports, as local signals: the core and caches still drive
+  // them (constants in synthesis: RVFI is off and l1_dcache ties its probe
+  // and monitor), and synthesis removes them, as nothing reads them.
+  logic     [31:0]                l1_dbg_addr_i;
+  msi_e     [1:0]                 l1_dbg_state_o;
+  logic     [1:0][LINE_BITS-1:0]  l1_dbg_data_o;
+  logic     [1:0]                 perf_valid_o;
+  logic     [1:0][31:0]           perf_addr_o;
+  logic     [1:0]                 perf_we_o;
+  logic     [1:0][3:0]            perf_be_o;
+  logic     [1:0][31:0]           perf_wdata_o;
+  logic     [1:0][31:0]           perf_rdata_o;
+  logic     [1:0]                 perf_err_o;
+  logic                           rvfi_valid_o;
+  logic [63:0]                    rvfi_order_o;
+  logic [31:0]                    rvfi_insn_o;
+  logic                           rvfi_trap_o;
+  logic                           rvfi_halt_o;
+  logic                           rvfi_intr_o;
+  logic [1:0]                     rvfi_mode_o;
+  logic [1:0]                     rvfi_ixl_o;
+  logic [4:0]                     rvfi_rs1_addr_o;
+  logic [4:0]                     rvfi_rs2_addr_o;
+  logic [31:0]                    rvfi_rs1_rdata_o;
+  logic [31:0]                    rvfi_rs2_rdata_o;
+  logic [4:0]                     rvfi_rd_addr_o;
+  logic [31:0]                    rvfi_rd_wdata_o;
+  logic [31:0]                    rvfi_pc_rdata_o;
+  logic [31:0]                    rvfi_pc_wdata_o;
+  logic [31:0]                    rvfi_mem_addr_o;
+  logic [3:0]                     rvfi_mem_rmask_o;
+  logic [3:0]                     rvfi_mem_wmask_o;
+  logic [31:0]                    rvfi_mem_rdata_o;
+  logic [31:0]                    rvfi_mem_wdata_o;
+  assign l1_dbg_addr_i = '0;
+  logic unused_tb;
+  assign unused_tb = ^{l1_dbg_state_o, l1_dbg_data_o, perf_valid_o, perf_addr_o,
+                       perf_we_o, perf_be_o, perf_wdata_o, perf_rdata_o, perf_err_o,
+                       rvfi_valid_o, rvfi_order_o, rvfi_insn_o, rvfi_trap_o,
+                       rvfi_halt_o, rvfi_intr_o, rvfi_mode_o, rvfi_ixl_o,
+                       rvfi_rs1_addr_o, rvfi_rs2_addr_o, rvfi_rs1_rdata_o,
+                       rvfi_rs2_rdata_o, rvfi_rd_addr_o, rvfi_rd_wdata_o,
+                       rvfi_pc_rdata_o, rvfi_pc_wdata_o, rvfi_mem_addr_o,
+                       rvfi_mem_rmask_o, rvfi_mem_wmask_o, rvfi_mem_rdata_o,
+                       rvfi_mem_wdata_o};
+`endif
 
   // The core's clock: stopped by the PMU while the core sleeps or is parked,
   // and divided by it for DVFS.

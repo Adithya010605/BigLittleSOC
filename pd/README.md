@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, **fmax 714 MHz** (1400 ps, all checks clean; section 10) | trial from 1400 ps (section 11) |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -558,8 +558,9 @@ left after the 40% budget, so +3.6 ps), `snoop_hit_o` comes 845 ps after it.
    are testbench taps: `l1_dbg_*` (L1 debug read, 548), `rvfi_*`
    (instruction trace) and `perf_*` (data monitor, `dmon_*` in `soc_top`).
    `soc_top_pd` leaves them unconnected, but in a hierarchical flow a tile's
-   ports are fixed when the tile is laid out, so they keep their pins and the
-   logic driving them. Section 3 planned to leave such ports out with
+   ports are fixed when the tile is laid out, so they keep their pins (driven
+   by tie cells: the logic behind them was already left out in synthesis, see
+   section 12). Section 3 planned to leave such ports out with
    `` `ifndef SYNTHESIS `` (plan step 1.5); that was done for `soc_top_pd`'s
    pins but not for the tiles' ports.
 2. **Every input → output path ends at a PMU-facing pin:** `dbg_*_rdata_o`,
@@ -569,17 +570,91 @@ left after the 40% budget, so +3.6 ps), `snoop_hit_o` comes 845 ps after it.
    interface has none: every bus/snoop output comes from a register, which
    keeps top-level timing simple.
 
+### 12. Test-only ports removed from the tiles; E-tile re-run at 1400 ps (2026-10-26)
+
+**RTL change** (`e_tile.sv`, `p_tile.sv`, `soc_top.sv`; simulation unchanged):
+
+| Where | Change |
+|---|---|
+| Both tiles | The testbench ports (`l1_dbg_*`, `perf_*`, `rvfi_*`) are ports only under `` `ifndef SYNTHESIS ``. In synthesis they are local signals, still driven by the core and caches, and removed as nothing reads them. |
+| `soc_top.sv` | The tile port macro is split: `SOC_TILE_PORTS` (the chip's) and `SOC_TILE_TB_PORTS` (testbench, empty in synthesis). In synthesis the outputs it fed (`dbg_state_o`, `dbg_data_o`, `dmon_*`, `rvfi_*`) read 0. |
+| Kept | `events_o`: the sysctl performance counters read it, so it's a chip signal. |
+
+**What the test ports actually cost:** less than estimated. The logic behind
+them was already left out in synthesis (`l1_dcache.sv` and `sram_sp.sv` tie
+the probe and monitor under `SYNTHESIS`; RVFI is off), so each pin was driven
+by a tie cell.
+
+| Synthesis | Before | After |
+|---|---|---|
+| Signal pins | 2,803 | 1,666 (−41%) |
+| Cells | 37,613 | 36,476 (−1,137: one tie cell per pin) |
+| Flip-flops | 3,857 | 3,857 |
+| Area | 10,594.5 µm² | 10,515.5 µm² (−0.75%) |
+
+**Checked:**
+- Lint: all 8 configurations clean.
+- The synthesis branch (`-DSYNTHESIS`, stub SRAM and clock-gate modules, tops
+  `e_tile`, `p_tile`, `soc_top_pd`): the same warnings as before the change,
+  none new. (That branch isn't part of `make lint`; its 4 warnings on
+  `soc_top_pd` are older.)
+- Every regression that passed before passes: unit, both cores' gates, cached
+  E-core and P-core suites except `add_demo` (below), 20/20 SoC programs,
+  benchmarks.
+
+**Found: two failures from commit `b0033fe`, not from this change.** Both fail
+identically on a clean checkout of the previous commit, and both pass on
+`main` (`e03bb66`). So `make test` and `make soc-mutation` have not been fully
+green on this branch since the PD-ready RTL change (section 3 recorded lint,
+coherence unit tests and the 20 SoC programs, not the full gate).
+1. **`add_demo` (cached E-core) fails:** it requires 100 dependent ADDs in at
+   most 200 cycles. Behind the cache every instruction fetch is a 2-cycle hit,
+   so they take 272. The hardware is as designed; the test's threshold assumes
+   1-cycle fetch (the same kind of threshold `mc_auto` had adjusted in
+   section 3).
+2. **SoC mutation: 48 of 50 detected.** `hit_ignores_core_en` survives (on
+   `main` a unit test caught it: "port answered while its core's clock is
+   paused"; with 2-cycle SRAM hits it no longer triggers), and
+   `flush_wb_race_ignored` is still caught by a unit assertion but counted as
+   not detected.
+
+**Result at 1400 ps: setup fails by 140 ps**, with every other check clean:
+
+| | Sweep 1400 ps (with test pins) | This run |
+|---|---|---|
+| Setup WNS / failing endpoints | +3.6 ps / 0 | **−140.2 ps / 66** |
+| Hold | +29.9 ps | +33.7 ps |
+| Area / power | 11,027 µm² / 17.95 mW | 11,029 µm² / 18.23 mW |
+| Wirelength | 278,909 µm | 274,646 µm |
+| DRC / slew / cap / fanout | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+
+**Why: synthesis mapped the critical path differently.** The E-core's branch →
+next PC path (`idex_ctrl_o[22]` → `pc_q[29]`):
+
+| | Sweep 1400 ps | This run |
+|---|---|---|
+| After synthesis (no wires) | 63 cells, 1,373 ps | 69 cells, 1,530 ps (+156 ps) |
+| After routing | 62 cells, 1,540 ps gates + 21 ps wire | 71 cells, 1,678 ps gates + 23 ps wire |
+
+The wire delay didn't change, and the bus pins sit on the same edges as
+before (the north edge, which held most of the test pins, emptied). The core's
+RTL didn't change either: removing outputs elsewhere changed the netlist that
+ABC starts from, and its mapping of this one long path came out about 10%
+slower (ABC is already in its default speed mode). **So the E-tile's fmax
+carries roughly ±10% of synthesis noise**; the sweep's 714 MHz was a good
+draw, not a stable figure.
+
 ---
 
 ## Open items
 
 | Item | Why it matters | When |
 |---|---|---|
-| E-tile fmax limit: two near-equal paths at 1400 ps, `bus_rdata_i` → `pc_q` (+3.6 ps) and the E-core branch → next PC (+25.8 ps) | Set the E-tile's fmax (714 MHz). Faster adders skipped for now (unstable option). | Optional: register the fill data before the core, or branch-after-ALU stall (RTL); otherwise accept 714 MHz |
+| E-tile fmax: 1400 ps fails by 140 ps after the test-port removal, from synthesis noise on the branch → next PC path (section 12) | The 714 MHz from the sweep isn't stable; the final tile needs a robust result | Next: over-constrain synthesis (`ABC_CLOCK_PERIOD_IN_PS` below the SDC period), or re-sweep, or the RTL fix (branch-after-ALU stall) |
 | One slow net at 1500 ps (`BUFx3` driving 31 inputs, 14 slew violations) | Must be clean at whatever period the final E-tile uses | Only if the final period is above 1400 ps: try `SLEW_MARGIN` |
 | Timing repair uses no setup margin | A relaxed run can end a hair below zero (1450 ps: −0.03 ps) | Final sign-off runs: add a small setup margin |
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
-| Test-only ports on the tiles (`l1_dbg_*`, `rvfi_*`, `perf_*`: 41% of E-tile pins) | Extra pins and logic in every tile copy; pin access and top-level routing | Before the final tile runs: `` `ifndef SYNTHESIS `` on the tile ports (plan step 1.5) |
+| `add_demo` fails on the cached E-core; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
 | Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |

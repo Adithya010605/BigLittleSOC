@@ -238,7 +238,13 @@ module soc_top
       .snoop_hit_o      ({snoop_hit[N+(c)],   snoop_hit[c]}),                \
       .snoop_dirty_o    ({snoop_dirty[N+(c)], snoop_dirty[c]}),              \
       .snoop_data_o     ({snoop_data[N+(c)],  snoop_data[c]}),               \
-      .events_o         ({events_o[N+(c)],    events_o[c]}),                 \
+      .events_o         ({events_o[N+(c)],    events_o[c]})
+
+  // The testbench's ports of a tile: simulation only, as in e_tile.sv. In
+  // synthesis the outputs they fed read 0 (below).
+`ifndef SYNTHESIS
+  `define SOC_TILE_TB_PORTS(c)                                               \
+      ,                                                                      \
       .l1_dbg_addr_i    (dbg_addr_i),                                        \
       .l1_dbg_state_o   ({dbg_state_o[N+(c)], dbg_state_o[c]}),              \
       .l1_dbg_data_o    ({dbg_data_o[N+(c)],  dbg_data_o[c]}),               \
@@ -270,12 +276,46 @@ module soc_top
       .rvfi_mem_wmask_o (rvfi_mem_wmask_o[c]),                               \
       .rvfi_mem_rdata_o (rvfi_mem_rdata_o[c]),                               \
       .rvfi_mem_wdata_o (rvfi_mem_wdata_o[c])
+`else
+  `define SOC_TILE_TB_PORTS(c)
+  assign dbg_state_o      = {NL1{MSI_I}};
+  assign dbg_data_o       = '0;
+  assign pf_valid         = '0;
+  assign pf_addr          = '0;
+  assign pf_we            = '0;
+  assign pf_be            = '0;
+  assign pf_wdata         = '0;
+  assign pf_rdata         = '0;
+  assign pf_err           = '0;
+  assign rvfi_valid_o     = '0;
+  assign rvfi_order_o     = '0;
+  assign rvfi_insn_o      = '0;
+  assign rvfi_trap_o      = '0;
+  assign rvfi_halt_o      = '0;
+  assign rvfi_intr_o      = '0;
+  assign rvfi_mode_o      = '0;
+  assign rvfi_ixl_o       = '0;
+  assign rvfi_rs1_addr_o  = '0;
+  assign rvfi_rs2_addr_o  = '0;
+  assign rvfi_rs1_rdata_o = '0;
+  assign rvfi_rs2_rdata_o = '0;
+  assign rvfi_rd_addr_o   = '0;
+  assign rvfi_rd_wdata_o  = '0;
+  assign rvfi_pc_rdata_o  = '0;
+  assign rvfi_pc_wdata_o  = '0;
+  assign rvfi_mem_addr_o  = '0;
+  assign rvfi_mem_rmask_o = '0;
+  assign rvfi_mem_wmask_o = '0;
+  assign rvfi_mem_rdata_o = '0;
+  assign rvfi_mem_wdata_o = '0;
+`endif
 
   for (genvar i = 0; i < int'(NUM_P); i++) begin : g_p
     p_tile #(
       .RVFI (RVFI)
     ) u_tile (
       `SOC_TILE_PORTS(i)
+      `SOC_TILE_TB_PORTS(i)
     );
   end
 
@@ -284,10 +324,12 @@ module soc_top
       .RVFI (RVFI)
     ) u_tile (
       `SOC_TILE_PORTS(NUM_P + j)
+      `SOC_TILE_TB_PORTS(NUM_P + j)
     );
   end
 
   `undef SOC_TILE_PORTS
+  `undef SOC_TILE_TB_PORTS
 
   // ====================================================================
   // The snooping bus and the shared L2 (rtl/coherence/snoop_bus.sv)
