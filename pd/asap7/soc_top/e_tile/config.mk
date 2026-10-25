@@ -1,6 +1,7 @@
 # ============================================================================
 # E-tile: one E-core with its L1 caches (rtl/soc/e_tile.sv), ASAP7.
 # Run 4: run 3 (hand floorplan, 1000 ps) + max fanout 32 in the SDC.
+# Sweep: run 4 + a 20% I/O budget for the debug ports (constraint.sdc).
 # ============================================================================
 
 # <top>_<block>: the top level finds the tile by this name.

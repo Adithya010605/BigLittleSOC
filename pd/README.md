@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | next | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, **fmax 714 MHz** (1400 ps, all checks clean; section 10) | — |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -164,7 +164,7 @@ clock; routing with 12 threads (`NUM_CORES=12`).
 | Route DRC errors | **0** |
 | Antenna violations | **0** |
 | Setup at 1000 ps | **WNS −391.6 ps**, TNS −126,082 ps, 954 failing endpoints |
-| Hold | **0 violations**; worst hold slack **+172 ps** (reset input → an L1 state flip-flop) |
+| Hold | **0 violations**; worst hold slack **+29.0 ps** (L1 controller state `cs_q[5]` → `cs_q[8]`). The reset-release check from `rst_ni` has +172 ps. |
 | Minimum period (this run) | **1391.7 ps → fmax ≈ 719 MHz** |
 | Clock skew (setup) | 53.8 ps |
 | Power at 1 GHz (default activity) | 26.6 mW: combinational 52%, macros 23%, clock 12%, sequential 12% |
@@ -177,7 +177,7 @@ top left**. Each cache's tags therefore sit far from their own data, which run
 **Setup vs hold:**
 - **Setup fails at 1000 ps** by 392 ps: the slowest path needs about 1392 ps.
   A slower clock fixes this, or a shorter path in the RTL.
-- **Hold is clean,** with +172 ps of margin. Hold doesn't depend on the clock
+- **Hold is clean,** with +29 ps of margin. Hold doesn't depend on the clock
   period, so a hold failure would mean the tile can't work at any speed. With
   hold clean, the only open question is how fast the tile can run.
 
@@ -266,7 +266,7 @@ are near the centre: core gate (69.9, 59.1), cache gate (72.5, 72.4).
 | Setup WNS | −392 ps (at 1000 ps) | −175 ps (at 1450 ps) | not comparable: different targets |
 | Failing setup endpoints | 954 | 94 | |
 | Minimum period from this run | 1392 ps | **1625 ps** | **worse**, see below |
-| Hold | 0 violations, +172 ps | 0 violations, +384 ps | |
+| Hold | 0 violations, +29.0 ps | 0 violations, +24.3 ps | |
 | Clock skew (setup) | 53.8 ps | 55.8 ps | same |
 | Power | 26.6 mW at 1 GHz | 17.6 mW at 690 MHz | ≈4% less energy per cycle |
 | Runtime / peak memory | 31 min / 9.2 GB | 24 min / 7.4 GB | |
@@ -331,7 +331,7 @@ result.
 | Utilisation | 42% | 55% | |
 | Routed wirelength | 391,221 µm | 278,122 µm | −29% |
 | Power at 1 GHz | 26.6 mW | 26.2 mW | |
-| Hold | +172 ps, clean | +196 ps, clean | |
+| Hold | +29.0 ps, clean | +28.6 ps, clean | |
 | Clock skew (setup) | 53.8 ps | 51.9 ps | |
 | Route DRC / antenna | 0 / 0 | 0 / 0 | |
 
@@ -399,7 +399,7 @@ little, since slow edges also slow down the gates they drive.
 | Minimum period / fmax | 1363 ps / 734 MHz | **1349 ps / 741 MHz** |
 | Setup TNS | −97.9 ns | −93.7 ns |
 | Failing setup endpoints | 934 | 929 |
-| Hold | +196 ps, clean | +234 ps, clean |
+| Hold | +28.6 ps, clean | +31.5 ps, clean |
 | Design area | 11,250 µm² | 11,258 µm² (+8 µm² of buffers) |
 | Wirelength | 278,122 µm | 275,974 µm |
 | Power at 1 GHz | 26.2 mW | 26.1 mW |
@@ -414,13 +414,134 @@ cleanest E-tile so far: every electrical check passes, and only setup at
 1000 ps fails, because of the E-core's logic. It is the E-tile's current
 best configuration.
 
+### 10. E-tile clock sweep, 1300–1500 ps (2026-10-25)
+
+**Setup:** run 4's configuration at 1300, 1350, 1400, 1450 and 1500 ps, the
+range around run 4's 1349 ps estimate. `scripts/pd_sweep.sh` runs the full
+flow once per period (`FLOW_VARIANT=sweep_<period>`, one at a time for
+memory). It sets both the SDC clock (`CLK_PERIOD_PS`) and the synthesis target
+(`ABC_CLOCK_PERIOD_IN_PS`); the 1300 ps synthesis log confirms
+`clock period to 1300`. `scripts/pd_sweep_report.py` writes the table to
+`results/e_tile/sweep/sweep.md` and `.csv`.
+
+**Correction to sections 6–9: the hold slack figures were the wrong check.**
+The first "min" path in ORFS's finish report is the reset-release (removal)
+check from the `rst_ni` input, and that was recorded as the worst hold slack
+(+172, +384, +196, +234 ps). The real worst hold slack (ORFS's
+`finish__timing__hold__ws`), between two cache-controller flip-flops
+(`cs_q[5]` → `cs_q[8]`), is **+29.0, +24.3, +28.6, +31.5 ps**. Hold is still
+clean in every run, but the margin is about 30 ps, not 200. The tables above
+are corrected.
+
+**Found at 1300 ps (first attempt): the worst path wasn't the E-core.**
+
+| Result at 1300 ps | |
+|---|---|
+| Setup WNS | −192 ps (estimate 670 MHz, *worse* than run 4) |
+| Worst path | `dbg_csr_addr_i` (input) → `dbg_rf_rdata_o` (output), straight through the tile |
+| E-core's own worst path (branch → next PC) | −94 ps, so about 1394 ps / 717 MHz |
+| Slew violations | 8 (run 4: 0) |
+
+Why:
+- **The debug port is functional, not test-only.** The PMU uses `dbg_rf_*`,
+  `dbg_csr_*` and `dbg_pc_*` to copy a task's registers, PC and CSRs from one
+  core to another during migration, one item per cycle (`pmu.sv`).
+- **The CSR port is shared** (`e_core_top.sv`:
+  `csr_addr_i = dbg_en ? dbg_csr_addr_i : csr_addr`). STA can't know that the
+  debug side is selected only while the core is halted, so it times
+  `dbg_csr_addr_i` → CSR read → trap/retire logic → `retire_o`, `events_o`
+  and on to `dbg_rf_rdata_o`.
+- **The I/O budget gave such paths only 20% of the cycle.** Every input had
+  40% of the cycle outside the tile, and every output 40%, so a path from an
+  input to an output had 20% (260 ps at 1300 ps). The debug paths need about
+  450 ps. At 1000 ps they were hidden behind the E-core's −349 ps path.
+
+Paths from an input to an output failing at 1300 ps, all starting at
+`dbg_csr_addr_i`:
+
+| Output | Bits failing | Worst slack |
+|---|---|---|
+| `dbg_rf_rdata_o` | 32 / 32 | −192 ps |
+| `dbg_csr_rdata_o` | 32 / 32 | −100 ps |
+| `events_o` | 1 / 9 | −90 ps |
+| `retire_o` | 1 / 1 | −89 ps |
+
+**Decided: a 20% budget for the debug ports** (`dbg_*_i`, `dbg_*_o`), 40% for
+all other ports.
+- **Why:** on the PMU side the address comes straight from a counter register
+  (`m_k_q`) and the read data passes two small muxes into a register
+  (`buf_q`), so little of the cycle is used outside the tile. Every path stays
+  timed, and the top level checks the assumption again.
+- **Considered:** false paths (more exact, since the paths through the shared
+  CSR mux can't happen, but a wrong false path is never caught by any tool,
+  and the real CSR read path would still need a smaller budget); registering
+  `dbg_csr_addr_i` inside the tile (removes every path from an input to an
+  output, the usual rule for a hard block, but changes the RTL and the PMU).
+  Kept as a possible later improvement.
+- **Checked** on the first 1300 ps layout with the new SDC: the debug ports
+  match (6 inputs, 3 outputs) and every debug path passes. One path remains:
+  `bus_done_i[0]` → `retire_o`, −20 ps (bus finishes a miss, the core retires
+  the same cycle). It's real and the PMU counts `retire_o` with an adder, so
+  it keeps 40%, and the re-run's timing repair should close it.
+
+The first 1300 ps run was deleted and the sweep restarted with the new SDC.
+
+**Result** (`results/e_tile/sweep/sweep.md`, generated; pictures of the 1400 ps
+run in `results/e_tile/sweep/1400/`):
+
+| Period | Target | Setup WNS | Failing endpoints | Hold WNS | Area (µm²) | Repair buffers | Power | Energy/cycle | Slew viol. | Met? |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1300 ps | 769 MHz | −67.54 ps | 59 | +26.3 ps | 11,080 | 4,387 | 19.6 mW | 25.5 pJ | 0 | no |
+| 1350 ps | 741 MHz | −11.04 ps | 11 | +26.5 ps | 11,054 | 4,133 | 18.8 mW | 25.4 pJ | 0 | no |
+| **1400 ps** | **714 MHz** | **+3.63 ps** | **0** | **+29.9 ps** | 11,027 | 3,942 | 18.0 mW | 25.1 pJ | 0 | **yes** |
+| 1450 ps | 690 MHz | −0.03 ps | 1 | +27.0 ps | 11,011 | 3,781 | 17.3 mW | 25.1 pJ | 0 | no (tie) |
+| 1500 ps | 667 MHz | +1.94 ps | 0 | +27.8 ps | 11,005 | 3,670 | 16.7 mW | 25.1 pJ | 14 | no (slew) |
+
+All five: 0 DRC, 0 max-cap, 0 max-fanout violations; worst IR drop 3.4–4.2 mV;
+setup skew 53–64 ps.
+
+**E-tile fmax: 714 MHz (1400 ps), proven:** setup and hold met, every check
+clean. 1350 ps misses by 11 ps, so the real limit lies between 1350 and
+1400 ps.
+
+**Found:**
+1. **Two paths set the limit, and they're nearly equal.** At 1400 ps:
+   `bus_rdata_i` → `pc_q` (+3.6 ps: a cache fill from the bus goes through the
+   core into the next-PC logic in the same cycle, and as a tile input it carries
+   the 40% budget), and the E-core's branch → next PC (+25.8 ps). Speeding up
+   only one of them gains little.
+2. **The "fmax estimate" depends on the target,** as found in run 2: 731 MHz
+   from the 1300 ps run, 716 MHz from 1400 ps, 668 MHz from 1500 ps. Only a run
+   that meets timing proves a frequency.
+3. **1450 ps "fails" by 0.03 ps on one endpoint.** Timing repair runs with
+   `-setup_margin 0`, so at a relaxed target it stops at about zero slack, and
+   detailed routing can tip one path just below. It's a tie, not a real limit,
+   but it means a sweep point isn't guaranteed to pass just because a faster
+   one did. A small setup margin would prevent this.
+4. **1500 ps: 14 max-slew violations, all on one net.** A `BUFx3` drives 31
+   inputs over about 56 µm (`net9876`, fed by an `AND2x2`). Under the
+   32-fanout limit, but a long wire. With timing relaxed, repair picked the
+   smallest buffer that met timing, and the routed wire made its edges 362 ps
+   against 320 ps. Electrical, not timing; fmax unaffected. Possible fix: a
+   slew margin for repair (`SLEW_MARGIN`).
+5. **Slowing the clock saves power but not energy.** From 1300 to 1500 ps,
+   power drops 15% (19.6 → 16.7 mW) but energy per cycle stays at about
+   25 pJ. With the voltage fixed, each cycle costs the same; a lower frequency
+   only spreads them out. Saving energy needs a lower voltage too (DVFS), which
+   this flow doesn't model (one 0.77 V corner).
+6. **A relaxed clock saves little area:** −0.7% design area and −16% repair
+   buffers from 1300 to 1500 ps. The SRAM macros (6,288 µm²) don't change.
+
 ---
 
 ## Open items
 
 | Item | Why it matters | When |
 |---|---|---|
-| E-core branch/next-PC path (~1.35 ns after run 4) | Sets the E-tile's fmax; layout alone gained only 2%. Faster adders skipped for now (unstable option). | Optional: branch-after-ALU stall (RTL); otherwise accept ~730 MHz |
+| E-tile fmax limit: two near-equal paths at 1400 ps, `bus_rdata_i` → `pc_q` (+3.6 ps) and the E-core branch → next PC (+25.8 ps) | Set the E-tile's fmax (714 MHz). Faster adders skipped for now (unstable option). | Optional: register the fill data before the core, or branch-after-ALU stall (RTL); otherwise accept 714 MHz |
+| One slow net at 1500 ps (`BUFx3` driving 31 inputs, 14 slew violations) | Must be clean at whatever period the final E-tile uses | Only if the final period is above 1400 ps: try `SLEW_MARGIN` |
+| Timing repair uses no setup margin | A relaxed run can end a hair below zero (1450 ps: −0.03 ps) | Final sign-off runs: add a small setup margin |
+| Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
 | Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
