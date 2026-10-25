@@ -18,7 +18,7 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, **fmax 714 MHz** (1400 ps, all checks clean; section 10) | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, **fmax 714 MHz** (1400 ps, all checks clean; section 10) | trial from 1400 ps (section 11) |
 | P-tile | — | — | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
@@ -532,6 +532,43 @@ clean. 1350 ps misses by 11 ps, so the real limit lies between 1350 and
 6. **A relaxed clock saves little area:** −0.7% design area and −16% repair
    buffers from 1300 to 1500 ps. The SRAM macros (6,288 µm²) don't change.
 
+### 11. E-tile abstract, trial from the 1400 ps run (2026-10-26)
+
+**What:** `make … FLOW_VARIANT=sweep_1400 generate_abstract` (ORFS
+`generate_abstract.tcl`, 40 s) wrote the two views the top level uses for a
+block, the same kind it already uses for the SRAMs:
+
+| File | What it holds |
+|---|---|
+| `e_tile.lef` (454 KB) | `MACRO e_tile`, `CLASS BLOCK`, 145 × 145 µm; every pin with its layer and position; blockages (`OBS`) on M1–M7, so the top level can route over the tile only on M8–M9; VDD/VSS pins on M6 |
+| `e_tile_typ.lib` (4.4 MB) | Timing model: 381 setup and 381 hold checks on inputs, 1,235 clock → output delays, 2,643 combinational (input → output) arcs |
+
+The top level (`BLOCKS = e_tile p_tile`) finds these under
+`results/asap7/soc_top_e_tile/<FLOW_VARIANT>/`, and the GDS (`6_final.gds`)
+from the same run. This was a trial; the final abstract comes from the
+tile's run at the chosen chip period. Neither file is committed (they are
+regenerated from the run).
+
+**Checked in the timing model:** the boundary matches the 1400 ps run.
+`bus_rdata_i` needs 836 ps inside the tile before the clock (the 840 ps
+left after the 40% budget, so +3.6 ps), `snoop_hit_o` comes 845 ps after it.
+
+**Found:**
+1. **41% of the tile's pins are test-only.** Of 2,803 signal pins, 1,137
+   are testbench taps: `l1_dbg_*` (L1 debug read, 548), `rvfi_*`
+   (instruction trace) and `perf_*` (data monitor, `dmon_*` in `soc_top`).
+   `soc_top_pd` leaves them unconnected, but in a hierarchical flow a tile's
+   ports are fixed when the tile is laid out, so they keep their pins and the
+   logic driving them. Section 3 planned to leave such ports out with
+   `` `ifndef SYNTHESIS `` (plan step 1.5); that was done for `soc_top_pd`'s
+   pins but not for the tiles' ports.
+2. **Every input → output path ends at a PMU-facing pin:** `dbg_*_rdata_o`,
+   `retire_o`, `events_o`, `flush_done_o`. Most go through the register
+   file's write-through bypass (for example 1,248 arcs `bus_rdata_i` →
+   `dbg_rf_rdata_o`) and the shared CSR port (section 10). The bus and snoop
+   interface has none: every bus/snoop output comes from a register, which
+   keeps top-level timing simple.
+
 ---
 
 ## Open items
@@ -542,6 +579,7 @@ clean. 1350 ps misses by 11 ps, so the real limit lies between 1350 and
 | One slow net at 1500 ps (`BUFx3` driving 31 inputs, 14 slew violations) | Must be clean at whatever period the final E-tile uses | Only if the final period is above 1400 ps: try `SLEW_MARGIN` |
 | Timing repair uses no setup margin | A relaxed run can end a hair below zero (1450 ps: −0.03 ps) | Final sign-off runs: add a small setup margin |
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
+| Test-only ports on the tiles (`l1_dbg_*`, `rvfi_*`, `perf_*`: 41% of E-tile pins) | Extra pins and logic in every tile copy; pin access and top-level routing | Before the final tile runs: `` `ifndef SYNTHESIS `` on the tile ports (plan step 1.5) |
 | Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
