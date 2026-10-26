@@ -2,8 +2,8 @@
 // p_core_bpu.sv — branch prediction unit: 2-bit BHT plus direct-mapped BTB.
 //
 //   BHT  256 x 2-bit saturating counters, indexed by pc[9:2]
-//   BTB  64 entries, indexed by pc[7:2]; each holds a valid bit, the full
-//        remaining tag pc[31:8], the target pc[31:2] and a jump flag
+//   BTB  16 entries, indexed by pc[5:2]; each holds a valid bit, the full
+//        remaining tag pc[31:6], the target pc[31:2] and a jump flag
 //
 // Lookup is combinational on the fetch address. A pc is predicted taken when
 // the BTB holds an entry for it AND either the entry is an unconditional jump

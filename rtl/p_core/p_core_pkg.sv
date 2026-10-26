@@ -33,11 +33,14 @@ package p_core_pkg;
   // --------------------------------------------------------------------
   // Branch prediction geometry (project plan, Phase 2, week 6).
   //   BHT: 256 two-bit saturating counters, indexed by pc[9:2]
-  //   BTB: 64 direct-mapped entries, indexed by pc[7:2], full tag pc[31:8]
+  //   BTB: 16 direct-mapped entries, indexed by pc[5:2], full tag pc[31:6]
+  // The BTB had 64 entries until the P-tile's layout (pd/README.md, section
+  // 14): in flip-flops they were about 3,600 bits and a 64:1 read mux, and
+  // routing the tile needed more memory than the machine has.
   // --------------------------------------------------------------------
   localparam int unsigned BHT_IDX_W = 8;
   localparam int unsigned BHT_SIZE  = 1 << BHT_IDX_W;
-  localparam int unsigned BTB_IDX_W = 6;
+  localparam int unsigned BTB_IDX_W = 4;
   localparam int unsigned BTB_SIZE  = 1 << BTB_IDX_W;
   localparam int unsigned BTB_TAG_W = 32 - 2 - BTB_IDX_W;
 

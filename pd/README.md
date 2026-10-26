@@ -19,7 +19,7 @@ something or a decision is made.
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — (hand floorplan from the start) | run 1 at 1000 ps: out of memory in detailed routing; counter path fixed in RTL (section 13) | — | — |
+| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14) | next | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -726,6 +726,34 @@ total is within 0.1%, so tied-off ports hide almost nothing):
 Nothing in it is dead logic: the testbench taps are gone (section 12) and
 everything left is used by the chip. Making the tile smaller is a trade-off
 (fewer BTB entries, 1-way caches, smaller counters, a multi-cycle multiplier).
+
+
+### 14. P-tile run 3: BTB 16 entries, first complete layout (2026-10-26)
+
+**RTL change:** the P-core's BTB from 64 to 16 entries (`p_core_pkg.sv`,
+`BTB_IDX_W` 6 → 4), so detailed routing fits in memory. Synthesis: 77,160
+cells (−16%), 7,714 flip-flops (−2,656), 21,400 µm² (−8%). Prediction only:
+results don't change, a few more mispredicts. `fence_i.S` case 8 counts exact
+mispredicts, and at the new size two of its instructions shared BTB entries,
+so its loop and `stale_site` were moved to addresses that don't alias.
+
+**Result at 1000 ps** (6 routing threads; pictures in `results/p_tile/run3/`):
+
+| | P-tile run 3 | E-tile run 4 (same target) |
+|---|---|---|
+| Routed GDS, DRC / antenna | ✓, 0 / 0 | ✓, 0 / 0 |
+| Setup WNS / failing endpoints | −627 ps / 4,176 | −349 ps / 929 |
+| fmax estimate | **615 MHz** | 741 MHz |
+| Hold | +18 ps, clean | +31 ps, clean |
+| Max slew violations | 172 | 0 |
+| Area / utilisation | 22,786 µm² / 52% | 11,258 µm² / 55% |
+| Power at 1 GHz | 40.3 mW | 26.1 mW |
+| Wirelength | 779 mm | 276 mm |
+| Detailed routing peak memory | **13.3 GB**, 26 min | 7–9 GB |
+
+**Found:** the P-tile is slower than the E-tile for now. Its worst path is the
+L1D tag SRAM → hit → core stall → MEM-stage registers (−627 ps). Routing
+memory is at the machine's limit: 13.3 GB of 15.4 GB.
 
 ---
 

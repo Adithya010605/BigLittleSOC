@@ -20,6 +20,11 @@
  *
  * The memory model is one unified RAM, so code can be written with ordinary
  * stores.
+ *
+ * NO-HALT-MODE: case 8 checks an exact predictor count (mhpmcounter7). A halt
+ * that lands in its loop redirects fetch on resume, which replaces a
+ * mispredict the count expects, so the halt-mode run (run_asm.sh,
+ * "random:3+h") skips this test, as it does branch_predict.S.
  * ============================================================================
  */
 #include "test_macros.h"
@@ -80,7 +85,13 @@ inline_site:
                  jal to stale_ret (cold), loop bne (cold)          = 4
          pass 4: loop bne exit                                    = 1
        = 5. Without the invalidation the addi would mispredict on all four
-       passes, giving 8. */
+       passes, giving 8.
+       The loop and stale_site are placed so that no two of their
+       instructions share a BTB entry: the loop at a 64-byte boundary (BTB
+       index 0..2), stale_site 32 bytes past one (index 8..10). Otherwise
+       aliasing adds mispredicts of its own (with the 16-entry BTB, at their
+       natural addresses the addi and the loop's bne each shared an entry
+       with stale_site's words). */
     jal     x0, stale_site          /* train: stale_site -> stale_target */
 stale_back:
     la      x8, stale_site
@@ -91,6 +102,7 @@ stale_back:
     csrw    mhpmcounter7, x0
     nop
     nop
+    .balign 64
 stale_loop:
     jal     x0, stale_site
 stale_ret:
@@ -117,7 +129,10 @@ smc_block:
     jalr    x0, 0(x6)
 
 /* Before patching: a jump to stale_target, which returns to stale_back.
-   After patching: an addi, followed by a jump back into the loop. */
+   After patching: an addi, followed by a jump back into the loop.
+   32 bytes past a 64-byte boundary: see case 7. */
+    .balign 64
+    .skip   32
 stale_site:
     jal     x0, stale_target
     jal     x0, stale_ret
