@@ -19,7 +19,7 @@ something or a decision is made.
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); run 4 (multiplier RTL + low-Vt) running (section 15) | next | — |
+| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); run 4 (multiplier RTL + low-Vt): 0 DRC, **790 MHz** estimate (section 15) | next | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -796,7 +796,39 @@ the big core spends leakage for speed; the E-tile stays RVT only.
 
 **Run 4** = run 3 + both fixes, from synthesis, 1000 ps target (compares
 directly with run 3). Expected: about 1.3–1.4 ns (roughly 700–770 MHz), so
-the P-tile at least matches the E-tile. Result below when it finishes.
+the P-tile at least matches the E-tile.
+
+**Run 4 result** (pictures in `results/p_tile/run4/`):
+
+| 1000 ps target | E-tile run 4 | P-tile run 3 | P-tile run 4 |
+|---|---|---|---|
+| Setup WNS | −349 ps | −627 ps | **−266 ps** |
+| fmax estimate | 741 MHz | 615 MHz | **790 MHz** |
+| Setup TNS / failing endpoints | −94 ns / 929 | −842 ns / 4,176 | −241 ns / 2,870 |
+| Hold | +31 ps | +18 ps | +11 ps |
+| Area | 11,258 µm² | 22,786 µm² | 22,449 µm² |
+| Power at 1 GHz / leakage | 26.1 / 0.5 mW | 40.3 / 1.0 mW | 42.5 / 1.1 mW |
+| DRC / slew / cap violations | 0 / 0 / 0 | 0 / 172 / 0 | 0 / 65 / 0 |
+| Routing peak memory | 7–9 GB | 13.3 GB | 13.3 GB |
+
+After synthesis alone, worst slack went from −523 ps (run 3) to −20 ps; after
+CTS, −637 → −291 ps.
+
+**Found:**
+1. **The P-tile is now the faster tile: 615 → 790 MHz (+28%)**, about 7% above
+   the E-tile, on top of its 1.03–1.76× more work per cycle. The two changes
+   ran together, so their separate shares aren't known.
+2. **Low-Vt cost almost no leakage:** 1.0 → 1.1 mW with 20,817 of about
+   82,000 cells LVT (synthesis already chose 24,606 LVT cells, not only
+   timing repair).
+3. **The worst path is now at the tile's edge:** L1D request → hit → core
+   retire → the `retire_o` pin (PMU), which has the 40% output budget. The
+   inside of the tile is no longer the limit; the top level checks the real
+   budget.
+4. **All timing so far is at the fast corner.** ORFS's ASAP7 default
+   (`CORNER = BC`) loads the `_FF_` libraries, for both tiles in every run;
+   earlier entries call it "typical". The comparisons stay fair (same corner
+   everywhere), but sign-off needs the slow corner, where every fmax drops.
 
 ---
 
@@ -810,8 +842,8 @@ the P-tile at least matches the E-tile. Result below when it finishes.
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
 | `add_demo` fails on the cached E-core; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
 | P-tile detailed routing needs more than about 10 GB (run 1 stopped at 30%) | The machine has 15 GB, about 4 GB in use by everything else | Next P-tile run: fewer routing threads, and/or a smaller design |
-| P-tile cache → multiplier path (−627 ps in run 3) | Set the P-tile's fmax (~615 MHz), below the E-tile | Fixed in run 4 (section 15): multiplier from registers + low-Vt; check the result |
-| Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
+| P-tile `retire_o` output path (−266 ps in run 4) | Now the P-tile's worst path: L1D → hit → retire → PMU pin, under the 40% output budget | Check the real budget at the top level |
+| Only the fast (FF) corner checked (ORFS ASAP7 default) | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
 | No reset synchroniser | Reset-release timing isn't checked; a production chip would add one | Documented limitation |
