@@ -19,7 +19,7 @@ something or a decision is made.
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14) | next | — |
+| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); run 4 (multiplier RTL + low-Vt) running (section 15) | next | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -755,6 +755,49 @@ so its loop and `stale_site` were moved to addresses that don't alias.
 L1D tag SRAM → hit → core stall → MEM-stage registers (−627 ps). Routing
 memory is at the machine's limit: 13.3 GB of 15.4 GB.
 
+
+### 15. Why the P-tile's fmax is low, and the fix: multiplier RTL + low-Vt (2026-10-26)
+
+**The problem.** Run 3 reaches only about 615 MHz, below the E-tile's 714–741
+MHz, although the P-core finishes programs 1.03–1.76× faster per cycle (bare
+core: bubble_sort 7,113 vs 12,523 cycles, add_demo 3,893 vs 4,915, memcpy
+240,053 vs 297,746, fib 421,169 vs 433,715). That speed-up is work per cycle
+(5 stages, branch prediction, hardware multiply/divide, 2-way caches); fmax is
+set by the single slowest path. A 5-stage pipeline should clock higher than a
+3-stage one, but one path held it back:
+
+```
+L1D tag SRAM -> 2-way tag compare -> hit -> core may advance
+   -> multiplier's first iteration on the forwarded operands
+   -> 4 Booth partial products -> 64-bit add of 5 numbers
+   -> product straight out -> EX result -> MEM register (result_q)
+```
+
+The SoC has one clock, so this tile would have set the whole chip's clock.
+
+**Fix 1, RTL: the multiplier starts from registers and registers its result**
+(`p_core_mul.sv`). The start cycle only captures the operands; the 4
+iterations run from registers; the product goes into `result_q`, and
+`done_o`/`result_o` come from registers. A late cache hit now only decides
+"capture or not", and the 5-number add no longer feeds EX in the same cycle.
+Results are unchanged; a MUL takes 6 cycles instead of 4.
+- `p_perf.S`: one multiply is 5 busy cycles (was 3), cases 1 and 14.
+- `mutation_test.sh`: `mul_result_not_held` now drops the held result by
+  clearing `done_q` without `ack_i` (the old line it patched is gone).
+- `docs/p_core_microarchitecture.md`: 6 cycles.
+- Checked: lint clean (8 configurations); P-core assembly tests 20/20.
+
+**Fix 2, layout: low-Vt cells on critical paths** (`config.mk`:
+`ASAP7_USE_VT = RVT LVT`). RVT stays the main library; with LVT loaded too,
+`repair_timing` swaps cells on failing paths to LVT (its `vt_swap` and
+`crit_vt_swap` moves, on by default). LVT switches faster but leaks more, so
+leakage rises (it was 1.0 mW of 40.3 mW). This matches big.LITTLE practice:
+the big core spends leakage for speed; the E-tile stays RVT only.
+
+**Run 4** = run 3 + both fixes, from synthesis, 1000 ps target (compares
+directly with run 3). Expected: about 1.3–1.4 ns (roughly 700–770 MHz), so
+the P-tile at least matches the E-tile. Result below when it finishes.
+
 ---
 
 ## Open items
@@ -767,7 +810,7 @@ memory is at the machine's limit: 13.3 GB of 15.4 GB.
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
 | `add_demo` fails on the cached E-core; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
 | P-tile detailed routing needs more than about 10 GB (run 1 stopped at 30%) | The machine has 15 GB, about 4 GB in use by everything else | Next P-tile run: fewer routing threads, and/or a smaller design |
-| P-tile cache → stall path (−511 ps after synthesis) | Now the P-tile's worst path: tag compare → hit → core stall → EX/MEM enables | Next RTL candidate |
+| P-tile cache → multiplier path (−627 ps in run 3) | Set the P-tile's fmax (~615 MHz), below the E-tile | Fixed in run 4 (section 15): multiplier from registers + low-Vt; check the result |
 | Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |

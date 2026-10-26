@@ -1,5 +1,5 @@
 // ============================================================================
-// p_core_mul.sv — iterative radix-4 Booth multiplier, 4 cycles.
+// p_core_mul.sv — iterative radix-4 Booth multiplier, 6 cycles.
 //
 // Implements MUL, MULH, MULHSU and MULHU. Every variant is the same 64-bit
 // product; they differ only in how each operand is extended and which half is
@@ -24,9 +24,13 @@
 // accumulator as its starting value. The Booth datapath itself therefore only
 // ever sees a signed multiplier.
 //
-// Four digits are consumed per cycle, so the 16 digits take exactly 4 cycles:
-// the first iteration runs in the cycle the operation starts, straight from
-// the operands, and the product is available combinationally in the fourth.
+// Four digits are consumed per cycle, so the 16 digits take 4 iterations.
+// The start cycle only captures the operands, the 4 iterations run from
+// registers, and the product is registered: done_o rises in the sixth cycle.
+// (Until the P-tile's layout the first iteration ran straight from the
+// forwarded operands and the product left combinationally in the fourth
+// cycle; that put a 64-bit five-input add behind a late cache hit and
+// limited the tile's clock. pd/README.md, section 15.)
 //
 // ---------------------------------------------------------------------------
 // HANDSHAKE WITH EX
@@ -36,10 +40,10 @@
 //   ack_i    EX has passed the result on (the instruction leaves EX).
 //   kill_i   the instruction in EX is flushed: abandon the operation.
 //
-// If EX cannot pass the result on in the cycle it appears (MEM is busy), the
-// result is held in result_q and done_o stays high until ack_i. Operands are
-// captured when the operation starts, so the forwarded values in EX may be
-// refreshed underneath a running operation without affecting it.
+// The result is held in result_q and done_o stays high until ack_i, however
+// long MEM keeps EX waiting. Operands are captured when the operation starts,
+// so the forwarded values in EX may be refreshed underneath a running
+// operation without affecting it.
 // ============================================================================
 
 module p_core_mul
@@ -100,9 +104,9 @@ module p_core_mul
   logic [63:0] src_acc, src_mcand;
   logic [32:0] src_mplier;
 
-  assign src_acc    = first ? correction    : acc_q;
-  assign src_mcand  = first ? a_ext         : mcand_q;
-  assign src_mplier = first ? {b_i, 1'b0}   : mplier_q;
+  assign src_acc    = acc_q;
+  assign src_mcand  = mcand_q;
+  assign src_mplier = mplier_q;
 
   // Booth partial product for one digit, given the three recoding bits and
   // the multiplicand already shifted into that digit's position.
@@ -127,8 +131,8 @@ module p_core_mul
   logic [31:0] result_now;
   assign result_now = hi_q ? acc_next[63:32] : acc_next[31:0];
 
-  assign done_o   = last | done_q;
-  assign result_o = done_q ? result_q : result_now;
+  assign done_o   = done_q;
+  assign result_o = result_q;
 
   // --------------------------------------------------------------------
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -145,16 +149,16 @@ module p_core_mul
       busy_q   <= 1'b0;
       done_q   <= 1'b0;
     end else if (first) begin
+      // Capture only: the iterations start from registers next cycle.
       busy_q   <= 1'b1;
-      cnt_q    <= 2'd1;
-      acc_q    <= acc_next;
-      mcand_q  <= src_mcand << 8;
-      mplier_q <= src_mplier >> 8;
+      cnt_q    <= 2'd0;
+      acc_q    <= correction;
+      mcand_q  <= a_ext;
+      mplier_q <= {b_i, 1'b0};
       hi_q     <= (op != MD_MUL);
     end else if (last) begin
       busy_q   <= 1'b0;
-      // Hold the result if EX cannot hand it on this cycle.
-      done_q   <= ~ack_i;
+      done_q   <= 1'b1;
       result_q <= result_now;
     end else if (busy_q) begin
       cnt_q    <= cnt_q + 2'd1;
@@ -162,6 +166,7 @@ module p_core_mul
       mcand_q  <= src_mcand << 8;
       mplier_q <= src_mplier >> 8;
     end else if (done_q && ack_i) begin
+      // Held until EX hands it on.
       done_q   <= 1'b0;
     end
   end

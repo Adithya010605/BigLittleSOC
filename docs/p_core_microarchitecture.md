@@ -17,7 +17,7 @@ two drop into the same testbench now and the same SoC slot later.
 | Branch resolution | In EX; mispredict penalty 2 cycles; correctly predicted taken branch: 0 |
 | Forwarding | EX→EX, MEM→EX (into EX), MEM→MEM (store data) |
 | Interlock | Load-use / CSR-use: 1 cycle at zero wait states; none for load→store data |
-| Multiply | Radix-4 Booth, iterative, 4 cycles in EX |
+| Multiply | Radix-4 Booth, iterative, 6 cycles in EX |
 | Divide | Restoring, 1 bit/cycle, 33 cycles in EX, abandoned on a flush |
 | Commit point | MEM: all traps precise, taken at MEM |
 | FENCE.I | Flush and refetch at commit |
@@ -176,7 +176,7 @@ an instruction also does not train the predictor.
 Penalty: a mispredicted instruction redirects fetch in the cycle it leaves EX,
 so the two younger instructions (in ID and IF) are lost — **2 cycles**.
 
-### 4.4 Multiplier (`p_core_mul.sv`) — 4 cycles
+### 4.4 Multiplier (`p_core_mul.sv`) — 6 cycles
 
 Radix-4 Booth, four digits per cycle. The multiplicand is extended to 64 bits
 (sign or zero); the multiplier is Booth-recoded **as a signed 32-bit number**
@@ -187,9 +187,11 @@ Booth datapath therefore only ever sees a signed multiplier, and all four
 operations are the same 64-bit product with different operand extension and a
 different half returned.
 
-The first iteration runs in the cycle the operation starts, straight from the
-operands, so the 16 digits take exactly 4 cycles and the product is available
-in the 4th.
+The start cycle only captures the operands; the 16 digits then take 4
+iterations from registers, and the product is registered, so it is available
+in the 6th cycle. (It was 4 cycles, with the first iteration on the forwarded
+operands and the product leaving combinationally, until the P-tile's layout
+showed that path limiting the clock: pd/README.md, section 15.)
 
 ### 4.5 Divider (`p_core_div.sv`) — 33 cycles
 
@@ -283,7 +285,7 @@ exempt.
 | load → store data | 0 |
 | CSR read → dependent instruction | 1 |
 | CSR read → store data | 0 |
-| MUL → anything | 3 (MUL occupies EX 4 cycles) |
+| MUL → anything | 5 (MUL occupies EX 6 cycles) |
 | DIV → anything | 32 (DIV occupies EX 33 cycles) |
 | correctly predicted branch/jump, taken or not | 0 |
 | mispredicted branch/jump | 2 |

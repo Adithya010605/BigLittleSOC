@@ -6,8 +6,8 @@
  *   mhpmcounter9  cycles the load-use / CSR-use interlock held ID
  *
  * mhpmcounter8 is exact at every memory latency: it counts cycles a multiply
- * or divide spends in EX before its result exists, which is 3 for a multiply
- * (4 cycles in EX) and 32 for a divide (33), independent of memory.
+ * or divide spends in EX before its result exists, which is 5 for a multiply
+ * (6 cycles in EX) and 32 for a divide (33), independent of memory.
  * mhpmcounter9 is exactly zero for a load feeding only a store's data (that
  * pair needs no interlock) and at least one for a load feeding an ALU op.
  * mhpmcounter7 counts exactly one for a cold taken branch and zero for a
@@ -31,13 +31,13 @@
     li      x6, 1000
     li      x7, 7
 
-    /* ---- 1: one multiply = 3 busy cycles -------------------------------- */
+    /* ---- 1: one multiply = 5 busy cycles -------------------------------- */
     csrw    mhpmcounter8, x0
     nop
     nop
     mul     x5, x6, x7
     csrr    x8, mhpmcounter8
-    CHECK_EQ x8, 3, 1
+    CHECK_EQ x8, 5, 1
 
     /* ---- 2: one divide = 32 busy cycles --------------------------------- */
     csrw    mhpmcounter8, x0
@@ -67,7 +67,7 @@
     sw      x0, 8(x1)
     mul     x5, x6, x7
     csrr    x8, mhpmcounter8
-    CHECK_EQ x8, 3, 14
+    CHECK_EQ x8, 5, 14
     CHECK_EQ x5, 7000, 15
     csrw    mhpmcounter8, x0
     nop

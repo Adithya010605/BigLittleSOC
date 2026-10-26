@@ -218,7 +218,7 @@ MUTATIONS=(
 "mul_no_unsigned_fix@@kill@@p_core/p_core_mul.sv@@  assign correction = (~b_signed & b_i[31]) ? {a_ext[31:0], 32'd0} : 64'd0;@@  assign correction = 64'd0;"
 "mulhsu_signed_b@@kill@@p_core/p_core_mul.sv@@  assign b_signed = (op == MD_MUL) | (op == MD_MULH);@@  assign b_signed = (op != MD_MULHU);"
 # Performance only: a result EX cannot take at once is dropped and recomputed.
-"mul_result_not_held@@kill@@p_core/p_core_mul.sv@@      done_q   <= ~ack_i;@@      done_q   <= 1'b0;"
+"mul_result_not_held@@kill@@p_core/p_core_mul.sv@@    end else if (done_q && ack_i) begin@@    end else if (done_q) begin"
 "div_no_zero_case@@kill@@p_core/p_core_div.sv@@      div_zero_q <= (b_i == 32'd0);@@      div_zero_q <= 1'b0;"
 "div_quotient_sign@@kill@@p_core/p_core_div.sv@@      q_neg_q    <= a_neg ^ b_neg;@@      q_neg_q    <= a_neg;"
 "div_not_killed@@kill@@p_core/p_core_ex_stage.sv@@  p_core_div u_div (\n    .clk_i    (clk_i),\n    .rst_ni   (rst_ni),\n    .start_i  (is_div),\n    .kill_i   (flush_i),@@  p_core_div u_div (\n    .clk_i    (clk_i),\n    .rst_ni   (rst_ni),\n    .start_i  (is_div),\n    .kill_i   (1'b0),"
