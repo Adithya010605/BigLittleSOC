@@ -19,7 +19,7 @@ something or a decision is made.
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); run 4 (multiplier RTL + low-Vt): **790 MHz**; run 5 (tags on edge): 793 MHz, −4.7% wire, 17 slew (sections 15–16) | next | — |
+| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); **run 4 is the main P-tile**: multiplier RTL + low-Vt, **790 MHz** estimate, 0 DRC (section 15); run 5 (tags on edge) an experiment (section 16) | next | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -860,10 +860,14 @@ Pictures: `results/p_tile/run5/`. The bays fill with cells; the remaining
 hot spots are the data SRAMs' pin edges and the lower middle, and the channel
 now has empty space at top and bottom (the tile could be narrower).
 
-**Conclusion:** kept as the P-tile floorplan: less wire, far fewer slew
-violations, less IR drop, the same top speed. TNS is a little worse (paths to
-the tags' pins, now 25 µm further out); the worst path (`retire_o` output) is
-unchanged.
+**Conclusion:** less wire, far fewer slew violations, less IR drop and the
+same top speed, but TNS is a little worse (paths to the tags' pins, now 25 µm
+further out); the worst path (`retire_o` output) is unchanged.
+
+**Decided: run 4 stays the main P-tile.** `macro_place.tcl` is back to run 4's
+tag positions (on the pin side); run 5 is kept here as a recorded experiment
+(`git show 827eb46:pd/asap7/soc_top/p_tile/macro_place.tcl` has its
+placement).
 
 ---
 

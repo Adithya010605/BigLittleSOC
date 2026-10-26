@@ -17,15 +17,13 @@
 #   west edge: L1 data cache   (g_l1[0])   mirrored (MY): pins face east
 #   east edge: L1 instr. cache (g_l1[1])   R0:            pins face west
 #
-# The tags sit on the tile's edge, pins facing the logic like the data's.
-# The space between a tag and the channel (about 25 x 100 um, bounded by the
-# data SRAMs above and below) is a bay open to the channel, where the tag
-# compare logic and other cells can go. (Until run 4 the tags were on the pin
-# side, aligned with the data's pins; that walled this space in as an unused
-# pocket and crowded the cells into the channel in front of the tags: see the
-# run 4 congestion picture. A placement blockage there also failed: tap cell
-# insertion ignores blockages, and 1,409 tap cells inside one failed the row
-# check.)
+# The tags are on the pin side, so their pins line up with the data's. That
+# leaves a pocket on the edge side of the tags, walled in by the data SRAMs
+# above and below and by the tags. It has no placement blockage: tap cell
+# insertion (the next step) fills every row with fixed tap and end-cap cells
+# and ignores placement blockages, so 1,409 of them sat inside one and failed
+# detailed placement's row check. The E-tile's similar strips beside its tags
+# stayed empty without one.
 # ============================================================================
 
 proc place_cache {l1 x orient} {
@@ -40,11 +38,11 @@ proc place_cache {l1 x orient} {
     -location [list [lindex $x 0] 185.76] -orientation $orient
 }
 
-# ---- West: L1 data cache. Data and tags at x 2.052, on the edge; pins face
-# east. ----
-place_cache 0 {2.052 2.052} MY
+# ---- West: L1 data cache. Data at x 2.052; tags at 26.946, so their east
+# (pin) edge lines up with the data's at x 35.3. ----
+place_cache 0 {2.052 26.946} MY
 
-# ---- East: L1 instruction cache. Data at x 126.684; tags at 151.578, so
-# their east edges line up on the tile's edge (x 159.9); pins face west. ----
-place_cache 1 {126.684 151.578} R0
+# ---- East: L1 instruction cache. Data and tags at x 126.684: their west
+# (pin) edges line up. ----
+place_cache 1 {126.684 126.684} R0
 
