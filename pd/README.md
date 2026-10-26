@@ -19,7 +19,7 @@ something or a decision is made.
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); run 4 (multiplier RTL + low-Vt): 0 DRC, **790 MHz** estimate (section 15) | next | — |
+| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); run 4 (multiplier RTL + low-Vt): **790 MHz**; run 5 (tags on edge): 793 MHz, −4.7% wire, 17 slew (sections 15–16) | next | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -829,6 +829,41 @@ CTS, −637 → −291 ps.
    (`CORNER = BC`) loads the `_FF_` libraries, for both tiles in every run;
    earlier entries call it "typical". The comparisons stay fair (same corner
    everywhere), but sign-off needs the slow corner, where every fmax drops.
+
+
+### 16. P-tile run 5: tag SRAMs moved to the edge (2026-10-26)
+
+**Why:** run 4's congestion picture showed the tags (on the pin side, aligned
+with the data's pins) walling in a pocket behind them, about 2 × 25 × 100 µm
+nobody could use, while the cells crowded in the channel in front of the tags
+(red along their inner edges and corners).
+
+**Change** (`macro_place.tcl` only): the tags sit on the tile's edge, pins
+still facing the logic. The space between each tag and the channel is now a
+bay open to the channel. Effective utilisation 53.5% → 49.8%. Same netlist as
+run 4 (its synthesis was reused), so every difference is the floorplan.
+
+| 1000 ps target | Run 4 (tags inside) | Run 5 (tags on edge) | Change |
+|---|---|---|---|
+| Routed wirelength | 803 mm | 765 mm | −4.7% |
+| Max-slew violations | 65 | 17 | −74% |
+| Worst IR drop | 2.7 mV | 1.9 mV | −30% |
+| Global-route track usage | 26.0% | 24.7% | |
+| Detailed-route peak memory | 13.3 GB | 12.8 GB | |
+| Setup WNS / fmax estimate | −266 ps / 790 MHz | −261 ps / 793 MHz | ≈ same |
+| Setup TNS / failing endpoints | −241 ns / 2,870 | −290 ns / 3,045 | worse |
+| Hold | +11 ps | +16 ps | |
+| Area / power / leakage | 22,449 µm² / 42.5 / 1.1 mW | 22,461 µm² / 42.7 / 1.1 mW | same |
+| DRC | 0 | 0 | |
+
+Pictures: `results/p_tile/run5/`. The bays fill with cells; the remaining
+hot spots are the data SRAMs' pin edges and the lower middle, and the channel
+now has empty space at top and bottom (the tile could be narrower).
+
+**Conclusion:** kept as the P-tile floorplan: less wire, far fewer slew
+violations, less IR drop, the same top speed. TNS is a little worse (paths to
+the tags' pins, now 25 µm further out); the worst path (`retire_o` output) is
+unchanged.
 
 ---
 
