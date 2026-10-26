@@ -19,7 +19,7 @@ something or a decision is made.
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — | — | — | — |
+| P-tile | — (hand floorplan from the start) | run 1 at 1000 ps: out of memory in detailed routing; counter path fixed in RTL (section 13) | — | — |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -644,6 +644,89 @@ slower (ABC is already in its default speed mode). **So the E-tile's fmax
 carries roughly ±10% of synthesis noise**; the sweep's 714 MHz was a good
 draw, not a stable figure.
 
+### 13. P-tile setup and run 1 (2026-10-26)
+
+**Setup** (`pd/asap7/soc_top/p_tile/`): the E-tile's final setup from the
+start, so run 1 is already a hand floorplan.
+
+| Carried over from the E-tile | P-tile |
+|---|---|
+| SDC: plain-number period, 40% I/O budget, 20% for `dbg_*` (section 10), max fanout 32 (section 9) | same `constraint.sdc` |
+| No testbench pins (section 12) | from the start: the tile RTL has none in synthesis |
+| Hand floorplan (section 8): each cache on one edge, pins facing the logic, 5 µm halo, clock pin top middle | 8 SRAMs (2-way caches). Each column: data way 0, tag 0, tag 1, data way 1, tags in the middle as all four are read together |
+| Size from synthesis for about 55% utilisation | 162 × 275 µm, 53.5% |
+| `soc_top_<block>` nickname for the top level | `soc_top_p_tile` |
+
+**Synthesis:** 90,987 cells, 10,370 flip-flops, 23,122 µm² (2.5× the E-tile's
+cells), 8 SRAMs, 2 clock gates, 0 problems, no latches. Flip-flops: branch
+predictor 4,096 (BTB 64 × 55 bits, BHT 256 × 2), caches' state and LRU bits
+3,374, register file 1,024, CSRs 740.
+
+**Found and changed while setting up:**
+
+| Finding | Cause | Fix |
+|---|---|---|
+| 220 `PDN-0110` warnings (an M4–M5 ground via not placed), all at x = 157.87 µm | At 160 µm wide, an M5 ground strap fell 1.1 µm inside the east core edge, too close for its vias | Tile 2 µm wider (162 µm): 0 warnings |
+| Detailed placement failed: "Placed in rows check failed (1,409)" | Placement blockages added in the pockets beside the tags: tap-cell insertion fills every row with fixed tap and end-cap cells and ignores placement blockages, so all 1,409 sat inside them | Blockages removed (the E-tile's similar strips stayed empty without one) |
+
+**Run 1 at 1000 ps: stopped in detailed routing, out of memory.** Global
+routing was clean (no overflow, 28% of tracks, 0 antenna). Detailed routing
+used 10.3 GB at 30% and was still rising; with the rest of the machine at
+about 4 GB, Claude Code stopped the run before the system ran out. (The
+E-tile peaked at 7.4–9.2 GB.)
+
+**Timing after clock-tree synthesis, at 1000 ps:** WNS −786 ps, TNS
+−2,192 ns, so about 560 MHz: the P-core is slower than the E-core so far.
+
+| Worst paths | Slack | Failing endpoints |
+|---|---|---|
+| MEM-stage instruction → event decode → 7 × 64-bit performance counters (`mhpm_q`) | −788 ps | 124 |
+| L1D request address / tags → hit → core stall → EX/MEM register enables (multiplier result, MEM exception address) | −582 ps | 94 |
+| Bus/snoop outputs | −415 to −447 ps | ~270 |
+| BTB/BHT training writes | −385 to −414 ps | ~2,500 |
+
+**RTL change: counter increments** (`rtl/common/csr_unit.sv`, both cores).
+`minstret` and the event counters were `q + (event ? 1 : 0)`: the events
+(retirement, stalls, interlocks) settle late, and as the adder's carry-in they
+rippled through all 64 bits. Now `event ? q + 1 : q`: the +1 comes from the
+register alone, and the late event only selects. The same value every cycle.
+
+| After synthesis (no wires) | Before | After |
+|---|---|---|
+| Counter path | −774 ps, 85 pins | −291 ps, 63 pins |
+| Worst slack | −774 ps | −511 ps (now the cache → stall path) |
+| TNS | −1,204 ns | −930 ns |
+| Cells / area | 90,987 / 23,122 µm² | 91,576 / 23,195 µm² (+0.3%) |
+
+Checked: lint clean (8 configurations); both cores' gates and mutation
+suites pass (E-core 20 killed, 7 documented equivalents; P-core 34 / 2);
+`add_demo` fails exactly as before (section 12).
+
+**Considered: the BTB in SRAM** (`fakeram7_64x28` × 2 would hold the 55-bit
+entries; the read can be issued with the next fetch address so the data
+arrives on time). Not done: a single-port SRAM loses a lookup when training
+writes, and a taken loop branch rewrites its entry every iteration, so
+mispredict counts would depend on timing. `branch_predict.S` checks exact
+counts at every wait-state setting. Keeping them exact needs a write buffer
+with forwarding. And it would save at most the predictor's 17% of the cells.
+
+**Where the cells are** (hierarchical synthesis, generic gates; the flat
+total is within 0.1%, so tied-off ports hide almost nothing):
+
+| Block | Cells | Share |
+|---|---|---|
+| L1 data cache (2-way, write-back) | 22,362 | 31% |
+| L1 instruction cache | 18,477 | 25% |
+| Branch predictor | 12,681 | 17% |
+| CSRs (9 × 64-bit counters) | 4,418 | 6% |
+| Register file | 4,107 | 6% |
+| Multiplier | 3,584 | 5% |
+| Rest | ~7,000 | 10% |
+
+Nothing in it is dead logic: the testbench taps are gone (section 12) and
+everything left is used by the chip. Making the tile smaller is a trade-off
+(fewer BTB entries, 1-way caches, smaller counters, a multi-cycle multiplier).
+
 ---
 
 ## Open items
@@ -655,6 +738,8 @@ draw, not a stable figure.
 | Timing repair uses no setup margin | A relaxed run can end a hair below zero (1450 ps: −0.03 ps) | Final sign-off runs: add a small setup margin |
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
 | `add_demo` fails on the cached E-core; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
+| P-tile detailed routing needs more than about 10 GB (run 1 stopped at 30%) | The machine has 15 GB, about 4 GB in use by everything else | Next P-tile run: fewer routing threads, and/or a smaller design |
+| P-tile cache → stall path (−511 ps after synthesis) | Now the P-tile's worst path: tag compare → hit → core stall → EX/MEM enables | Next RTL candidate |
 | Only the typical corner checked | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
 | L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |

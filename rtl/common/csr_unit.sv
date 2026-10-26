@@ -279,15 +279,17 @@ module csr_unit
     if (cyc_wr)  mcycle_d[31:0]  = wdata;
     if (cych_wr) mcycle_d[63:32] = wdata;
 
-    minstret_d = minstret_q +
-                 ((instr_retired_i & ~inhibit_ir_q) ? 64'd1 : 64'd0);
+    // The +1 is formed from the counter alone and the event only selects it:
+    // the events (retirement, stalls, interlocks) settle late in the cycle,
+    // and as the adder's carry-in they rippled through all 64 bits.
+    minstret_d = (instr_retired_i & ~inhibit_ir_q) ? minstret_q + 64'd1 : minstret_q;
     if (ins_wr)  minstret_d[31:0]  = wdata;
     if (insh_wr) minstret_d[63:32] = wdata;
   end
 
   always_comb begin
     for (int unsigned i = 0; i < NUM_HPM; i++) begin
-      mhpm_d[i] = mhpm_q[i] + (hpm_event_i[i] ? 64'd1 : 64'd0);
+      mhpm_d[i] = hpm_event_i[i] ? mhpm_q[i] + 64'd1 : mhpm_q[i];
     end
     if (wr_en && hpm_lo_hit) mhpm_d[hpm_idx][31:0]  = wdata;
     if (wr_en && hpm_hi_hit) mhpm_d[hpm_idx][63:32] = wdata;
