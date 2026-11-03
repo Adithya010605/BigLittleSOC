@@ -6,7 +6,9 @@
 # the period for timing-driven synthesis from the first `set clk_period <n>`
 # line (scripts/variables.mk). The clock sweep overrides it with
 # CLK_PERIOD_PS, and must then also pass ABC_CLOCK_PERIOD_IN_PS=<n> to make.
-set clk_period 1000
+# The chip clock: 1500 ps (667 MHz), the same for both tiles (one clock in
+# the SoC). Chosen from the two clock sweeps, pd/README.md section 17.
+set clk_period 1500
 if {[info exists ::env(CLK_PERIOD_PS)]} { set clk_period $::env(CLK_PERIOD_PS) }
 create_clock -name clk -period $clk_period [get_ports clk_i]
 
@@ -21,8 +23,14 @@ set io_budget [expr {0.4 * $clk_period}]
 # 40% + 40%, a path from a debug input to an output got only 20% of the cycle
 # (260 ps at 1300 ps) and was the worst path of the tile. Still timed, and
 # checked again at the top level. (l1_dbg_* is test-only: keeps 40%.)
+#
+# The snoop inputs (snoop_valid_i, snoop_type_i, snoop_addr_i) get the same
+# 20%: snoop_bus.sv drives them from registers (bs_q, sharers_q, m_q, addr_q,
+# vaddr_q) through a decoder, an AND and a 3-way mux, nothing else. At 40%,
+# snoop_valid_i -> L1 -> branch -> next PC failed by 93 ps at 1500 ps
+# (pd/README.md, section 17).
 set dbg_budget [expr {0.2 * $clk_period}]
-set dbg_in  [get_ports dbg_*_i]
+set dbg_in  [concat [get_ports dbg_*_i] [get_ports snoop_*_i]]
 set dbg_out [get_ports dbg_*_o]
 
 set other_in [delete_from_list [all_inputs] [concat [get_ports clk_i] $dbg_in]]

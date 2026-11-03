@@ -18,8 +18,8 @@ something or a decision is made.
 
 | Block | Run 1 (automatic) | Run 2 (floorplan) | Run 3 (clock sweep) | Abstract |
 |---|---|---|---|---|
-| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | trial from 1400 ps (section 11) |
-| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); **run 4 is the main P-tile**: multiplier RTL + low-Vt, **790 MHz** estimate, 0 DRC (section 15); run 5 (tags on edge) an experiment (section 16) | next | — |
+| E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | final at 1500 ps: **−61 ps** (I/O path; −27 ps inside), 0 DRC, 13 slew; macro in `pd/macros/e_tile/`, not closed yet (section 17) |
+| P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); **run 4 is the main P-tile**: multiplier RTL + low-Vt, 0 DRC (section 15); run 5 (tags on edge) an experiment (section 16) | ✓ done: 1300–1500 ps, ~700–720 MHz estimate, none met (section 17) | ✓ **final at 1500 ps (667 MHz): met, +11 ps**, 0 DRC, 15 slew; macro in `pd/macros/p_tile/` (section 17) |
 | Top (`soc_top_pd`) | — | — | — | — |
 
 ---
@@ -869,15 +869,91 @@ tag positions (on the pin side); run 5 is kept here as a recorded experiment
 (`git show 827eb46:pd/asap7/soc_top/p_tile/macro_place.tcl` has its
 placement).
 
+### 17. Chip clock and final tile runs: the macros for the top level (2026-10-28 – 2026-11-03)
+
+**P-tile clock sweep** (run 4's setup, `scripts/pd_sweep.sh p_tile`, table in
+`results/p_tile/sweep/sweep.md`):
+
+| Period | Setup WNS | Failing endpoints | fmax estimate | Slew viol. | DRC |
+|---|---|---|---|---|---|
+| 1300 ps | −85 ps | 715 | 722 MHz | 139 | 0 |
+| 1400 ps | −25 ps | 60 | 702 MHz | 163 | 0 |
+| 1500 ps | −21 ps | 227 | 658 MHz | 97 | 0 |
+
+**Found:** run 4's 790 MHz (an estimate from a 1000 ps target, section 15)
+was optimistic. At relaxed targets the P-tile lands at about 700–720 MHz,
+the same as the E-tile, and no period in this sweep met timing.
+
+**Each tile's fmax, separately** (fast corner, as everywhere so far):
+
+| | E-tile | P-tile |
+|---|---|---|
+| Proven (a run that meets timing) | **714 MHz** (1400 ps sweep, section 10; not stable after the test-port removal, section 12) | **667 MHz** (1500 ps final run, below) |
+| Best estimate, 1 / (period − WNS) | 735 MHz (1350 ps) | 722 MHz (1300 ps) |
+
+**Chip clock: 1500 ps (667 MHz)** for both tiles (the SoC has one clock),
+set by the P-tile: the only period where it met timing. Set in both
+`constraint.sdc` files.
+
+**Final-run settings** (both `config.mk`): `SETUP_SLACK_MARGIN = 30` (timing
+repair aims 30 ps past zero, so a relaxed run doesn't end a hair below it as
+1450 ps did) and `SLEW_MARGIN = 20` (slew repair aims 20% under the limit).
+`scripts/pd_final.sh` runs the full flow, then `generate_abstract`, and
+copies the views to `pd/macros/<tile>/`.
+
+**P-tile final** (`FLOW_VARIANT=final_1500`): **meets timing**: setup
++11.2 ps, 0 failing endpoints, hold +22.2 ps, 0 DRC. Worst path: MEM-stage
+store flag → IF skid buffer. Area 22,198 µm², power 28.4 mW (leakage
+1.05 mW), routed wire 795 mm. 15 slew violations remain (worst 339 ps vs the
+320 ps limit, partly on the reset tree, which has 760 ps of slack); see the
+open items. Pictures: `results/p_tile/final/`.
+
+**E-tile final, first attempt** (`final_1500`): **−93 ps**, 51 failing
+endpoints. Path: `snoop_valid_i` → L1 → branch → next PC. The snoop inputs
+had the general 40% input budget. A second run with synthesis over-constrained
+to 1300 ps (`final_1500_abc1300`) came out bit-identical, so it changed
+nothing.
+
+**Fix (E-tile `constraint.sdc`):** the snoop inputs (`snoop_valid_i`,
+`snoop_type_i`, `snoop_addr_i`) get the 20% budget the debug inputs have.
+`snoop_bus.sv` drives them from registers (`bs_q`, `sharers_q`, `m_q`,
+`addr_q`, `vaddr_q`) through only a decoder, an AND gate and a 3-way mux, so
+40% of the cycle outside the tile was too much. The P-tile met timing with
+the stricter 40% and keeps it. The top level checks the real path.
+
+**E-tile final** (`FLOW_VARIANT=final_1500_snoop20`): **still −61 ps**, 21
+failing endpoints (TNS −0.86 ns, was −1.86), hold +30.0 ps, 0 DRC, 13 slew
+violations (worst 326 ps vs the 320 ps limit). Area 10,993 µm², power
+16.4 mW (leakage 0.52 mW), routed wire 279 mm. Pictures:
+`results/e_tile/final/`.
+- The snoop fix worked: the snoop path is gone.
+- Worst path now: `bus_rdata_i` (refill data, 40% input budget) → L1 →
+  fetch → branch → `pc_q`, **−61 ps**. An I/O path, so its real slack
+  depends on the bus timing at the top level.
+- Worst path inside the tile: `idex_ctrl` (EX) → ALU add → branch compare →
+  `pc_q`, **−27 ps**, the noisy branch → next PC path of section 12. This one
+  is real at 1500 ps.
+
+**So:** the P-tile closes at 1500 ps; the E-tile misses it by 27 ps inside
+and 61 ps on its I/O path. Its macro is saved (`pd/macros/e_tile/`) so the
+top level can start, but the E-tile isn't closed yet; see the open items.
+
+**Macros** (`pd/macros/<tile>/`, committed, what `soc_top_pd` places):
+
+| File | E-tile | P-tile |
+|---|---|---|
+| `<tile>.lef`: outline, pins, blockages M1–M7 | 260 KB | 265 KB |
+| `<tile>.lib`: timing model (ORFS names it `_typ`, but it is the FF corner) | 4.3 MB | 2.3 MB |
+| `<tile>.gds.gz`: the full layout, merged into the chip GDS | 8.1 MB | 18 MB |
+
 ---
 
 ## Open items
 
 | Item | Why it matters | When |
 |---|---|---|
-| E-tile fmax: 1400 ps fails by 140 ps after the test-port removal, from synthesis noise on the branch → next PC path (section 12) | The 714 MHz from the sweep isn't stable; the final tile needs a robust result | Next: over-constrain synthesis (`ABC_CLOCK_PERIOD_IN_PS` below the SDC period), or re-sweep, or the RTL fix (branch-after-ALU stall) |
-| One slow net at 1500 ps (`BUFx3` driving 31 inputs, 14 slew violations) | Must be clean at whatever period the final E-tile uses | Only if the final period is above 1400 ps: try `SLEW_MARGIN` |
-| Timing repair uses no setup margin | A relaxed run can end a hair below zero (1450 ps: −0.03 ps) | Final sign-off runs: add a small setup margin |
+| E-tile misses the 1500 ps chip clock: −27 ps inside (branch → next PC), −61 ps from `bus_rdata_i` (section 17) | The chip clock is set by the slower tile | Next: low-Vt cells on the E-tile too (as on the P-tile), or a 1600 ps (625 MHz) chip clock with an E-tile re-run only |
+| Slew violations in the final tiles: P-tile 15 (worst 339 vs 320 ps, partly the reset tree), E-tile 13 (worst 326 ps) | Small, but the macros should be electrically clean | With the next tile re-run |
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
 | `add_demo` fails on the cached E-core; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
 | P-tile detailed routing needs more than about 10 GB (run 1 stopped at 30%) | The machine has 15 GB, about 4 GB in use by everything else | Next P-tile run: fewer routing threads, and/or a smaller design |

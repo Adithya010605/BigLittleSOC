@@ -8,7 +8,9 @@
 # the period for timing-driven synthesis from the first `set clk_period <n>`
 # line (scripts/variables.mk). The clock sweep overrides it with
 # CLK_PERIOD_PS, and must then also pass ABC_CLOCK_PERIOD_IN_PS=<n> to make.
-set clk_period 1000
+# The chip clock: 1500 ps (667 MHz), the same for both tiles (one clock in
+# the SoC). Chosen from the two clock sweeps, pd/README.md section 17.
+set clk_period 1500
 if {[info exists ::env(CLK_PERIOD_PS)]} { set clk_period $::env(CLK_PERIOD_PS) }
 create_clock -name clk -period $clk_period [get_ports clk_i]
 

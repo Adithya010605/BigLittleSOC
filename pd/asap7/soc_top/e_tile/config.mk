@@ -45,3 +45,10 @@ export MACRO_PLACE_HALO    = 5 5
 
 # Pins: the clock in the middle of the top edge; the rest automatic.
 export IO_CONSTRAINTS = /workspace/pd/asap7/soc_top/e_tile/io.tcl
+
+# ---- Final run (the macro the top level uses): margins on repair ----
+# Timing repair aims 30 ps past zero setup slack, and slew repair 20% under
+# the limit, so the final tile ends with some room instead of a hair below
+# zero (pd/README.md, section 17).
+export SETUP_SLACK_MARGIN = 30
+export SLEW_MARGIN        = 20
