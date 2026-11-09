@@ -12,6 +12,13 @@
 // the xmem_* pins, the interconnect's line-wide port for slave 0 (32-bit
 // address, 256-bit data each way, a byte strobe per byte). A production chip
 // would put a DRAM controller and PHY there instead.
+//
+// Reset is asserted asynchronously and released synchronously: rst_ni goes
+// through a two-flop synchronizer, and the SoC gets its output. The release
+// then starts at a clock edge, with the whole cycle to reach the ~10k
+// asynchronously reset flops, instead of the 60% the pin's input delay
+// leaves (chip run 2 missed by 2 ps on exactly that path, rst_ni -> an L2
+// valid bit's reset pin).
 // ============================================================================
 
 // The testbench-only outputs are left unconnected on purpose.
@@ -34,6 +41,18 @@ module soc_top_pd (
   input  logic         xmem_rsp_err_i
 );
 
+  logic rst_meta_q, rst_sync_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      rst_meta_q <= 1'b0;
+      rst_sync_q <= 1'b0;
+    end else begin
+      rst_meta_q <= 1'b1;
+      rst_sync_q <= rst_meta_q;
+    end
+  end
+
   soc_top #(
     .NUM_P     (2),
     .NUM_E     (2),
@@ -41,7 +60,7 @@ module soc_top_pd (
     .EXT_MEM   (1'b1)
   ) u_soc (
     .clk_i           (clk_i),
-    .rst_ni          (rst_ni),
+    .rst_ni          (rst_sync_q),
     .cpu_rst_ni      (1'b1),
     .tbm_req_valid_i ('0),
     .tbm_req_ready_o (),

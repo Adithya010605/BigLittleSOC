@@ -57,8 +57,24 @@ export PLACE_DENSITY    = 0.65
 export MACRO_PLACEMENT_TCL = /workspace/pd/asap7/soc_top/p_tile/macro_place.tcl
 export MACRO_PLACE_HALO    = 5 5
 
-# Pins: the clock in the middle of the top edge; the rest automatic.
+# Pins: the clock in the middle of the top edge; the rest automatic, on the
+# top edge and the top 75 um of the two side edges (the bottom edge and the
+# rest of the sides excluded). At the chip level that side faces the bus
+# and the L2 (pd/README.md, section 20). The top edge alone is too short:
+# 1,666 pins, and an M5 pin every 2 tracks gives about 1687.
+export PLACE_PINS_ARGS = -exclude bottom:* -exclude left:0-200 -exclude right:0-200
 export IO_CONSTRAINTS = /workspace/pd/asap7/soc_top/p_tile/io.tcl
+
+# ---- Routing: M2 to M6; M7 and up belong to the chip ----
+# The chip's power grid reaches the tile's M6 power stripes from M7, so the
+# tile must leave M7 free: the abstract blocks every layer the tile uses,
+# over its whole area. (The tiles used M7 for 0.1-0.5% of their wiring.)
+export MAX_ROUTING_LAYER = M6
+# Without M7 and with the pins on one side, global routing ended with one
+# overflowing GCell on M3 at the platform's 25% layer adjustment (the share
+# of each layer held back); 18%, as the router suggests (section 20).
+export ROUTING_LAYER_ADJUSTMENT = 0.18
+export PRE_GLOBAL_ROUTE_TCL = /workspace/pd/asap7/soc_top/p_tile/grt_adjust.tcl
 
 # ---- Final run (the macro the top level uses): margins on repair ----
 # Timing repair aims 30 ps past zero setup slack, and slew repair 20% under

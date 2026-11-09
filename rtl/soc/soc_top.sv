@@ -329,19 +329,23 @@ module soc_top
   assign rvfi_mem_wdata_o = '0;
 `endif
 
+  // RVFI reaches the tiles in simulation only: in synthesis a tile is a hard
+  // macro, which takes no parameters (and RVFI is off).
+`ifdef SYNTHESIS
+  `define SOC_TILE_PARAMS
+`else
+  `define SOC_TILE_PARAMS #(.RVFI (RVFI))
+`endif
+
   for (genvar i = 0; i < int'(NUM_P); i++) begin : g_p
-    p_tile #(
-      .RVFI (RVFI)
-    ) u_tile (
+    p_tile `SOC_TILE_PARAMS u_tile (
       `SOC_TILE_PORTS(i)
       `SOC_TILE_TB_PORTS(i)
     );
   end
 
   for (genvar j = 0; j < int'(NUM_E); j++) begin : g_e
-    e_tile #(
-      .RVFI (RVFI)
-    ) u_tile (
+    e_tile `SOC_TILE_PARAMS u_tile (
       `SOC_TILE_PORTS(NUM_P + j)
       `SOC_TILE_TB_PORTS(NUM_P + j)
     );
@@ -349,6 +353,7 @@ module soc_top
 
   `undef SOC_TILE_PORTS
   `undef SOC_TILE_TB_PORTS
+  `undef SOC_TILE_PARAMS
 
   // ====================================================================
   // The snooping bus and the shared L2 (rtl/coherence/snoop_bus.sv)
