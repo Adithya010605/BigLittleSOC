@@ -24,6 +24,12 @@ export VERILOG_FILES = /workspace/rtl/common/e_core_pkg.sv \
 export VERILOG_INCLUDE_DIRS = /workspace/rtl/common /workspace/rtl/e_core
 export SDC_FILE = /workspace/pd/asap7/soc_top/e_tile/constraint.sdc
 
+# ---- Cell libraries: regular-Vt, plus low-Vt for critical paths ----
+# As on the P-tile (section 15): RVT stays the main library and timing
+# repair swaps cells on failing paths to LVT. Added for the final run at
+# 1500 ps, which missed by 61 ps with RVT only (pd/README.md, section 18).
+export ASAP7_USE_VT = RVT LVT
+
 # ---- SRAM macros: outline and pins (.lef), timing (.lib) ----
 # 256x256: cache line data. 256x32: cache tags.
 export ADDITIONAL_LEFS = $(PLATFORM_DIR)/lef/fakeram7_256x256.lef \

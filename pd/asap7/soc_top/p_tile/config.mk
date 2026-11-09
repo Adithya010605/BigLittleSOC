@@ -31,7 +31,8 @@ export SDC_FILE = /workspace/pd/asap7/soc_top/p_tile/constraint.sdc
 # RVT stays the main library. LVT cells switch faster but leak more; with
 # both loaded, timing repair swaps cells on failing paths to LVT (its
 # vt_swap moves) and leaves the rest RVT. The big core spends some leakage
-# for speed; the E-tile stays RVT only (pd/README.md, section 15).
+# for speed (pd/README.md, section 15); the E-tile does the same since
+# section 18.
 export ASAP7_USE_VT = RVT LVT
 
 # ---- SRAM macros: outline and pins (.lef), timing (.lib) ----
