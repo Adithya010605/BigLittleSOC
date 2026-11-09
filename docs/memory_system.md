@@ -102,6 +102,11 @@ snoop filter. A coherent request snoops only the L1s whose bit is set, never
 the whole cluster, and inclusion makes that sound: a line missing from the L2
 is held by no L1, so an L2 miss needs no snoop at all.
 
+**Storage:** each way has a tag SRAM (tag, dirty and sharer bits, 27 bits
+wide) and a data SRAM (the line). `B_LOOKUP` reads the set out of all eight,
+and the next cycle compares the tags; only the valid bits and the pseudo-LRU
+state are flip-flops, so reset still empties the L2 in one cycle.
+
 | State | Does |
 |---|---|
 | `B_IDLE` | round-robin grant among the L1s; latch the request |
@@ -179,7 +184,10 @@ back-to-back transactions lose no arbitration cycle.
   (the plan's "simple SRAM controller, 1-cycle access"). A `stall` input is
   the testbench's latency knob. The whole RAM is cacheable. The plan's
   read-only boot ROM region is RAM here, because the loader writes the program
-  there and the self-modifying-code tests write code.
+  there and the self-modifying-code tests write code. This is the simulation
+  model of main memory: the chip for layout (`soc_top_pd`, `EXT_MEM = 1`) has
+  no main memory of its own and brings slave 0's port out as pins (`xmem_*`)
+  to a memory off chip, as a real SoC does with its DRAM.
 * **UART.** Transmit data at +0 and status at +4, at the addresses the
   programs always used; each byte appears on `uart_tx_valid/byte`.
 * **Interrupt controller.** Per hart at +0x100·h, with exactly the old

@@ -2,13 +2,16 @@
 // soc_top_pd.sv
 //
 // The SoC as a chip, for physical design: the 2P+2E soc_top with only its real
-// pins -- clock, reset and the UART. Everything else soc_top brings out is for
-// the testbench (the loader and traffic masters, the SRAM latency knob, the
-// coherence probes, monitors and RVFI trace); here it is tied off or left
-// unconnected, and synthesis removes whatever drove it.
+// pins -- clock, reset, the UART and the main-memory port. Everything else
+// soc_top brings out is for the testbench (the loader and traffic masters, the
+// SRAM latency knob, the coherence probes, monitors and RVFI trace); here it
+// is tied off or left unconnected, and synthesis removes whatever drove it.
 //
-// The system RAM is 64 KB here (192 KB in simulation): it is a stand-in for
-// off-chip memory, and its size does not change the design around it.
+// Main memory is off chip (EXT_MEM), as on any real SoC: the chip has the
+// cores, their L1s, the L2 and the peripherals, and reaches its memory through
+// the xmem_* pins, the interconnect's line-wide port for slave 0 (32-bit
+// address, 256-bit data each way, a byte strobe per byte). A production chip
+// would put a DRAM controller and PHY there instead.
 // ============================================================================
 
 // The testbench-only outputs are left unconnected on purpose.
@@ -17,14 +20,25 @@ module soc_top_pd (
   input  logic       clk_i,
   input  logic       rst_ni,
   output logic       uart_tx_valid_o,
-  output logic [7:0] uart_tx_byte_o
+  output logic [7:0] uart_tx_byte_o,
+
+  // ---- Off-chip main memory ----
+  output logic         xmem_req_valid_o,
+  input  logic         xmem_req_ready_i,
+  output logic [31:0]  xmem_req_addr_o,
+  output logic         xmem_req_write_o,
+  output logic [255:0] xmem_req_wdata_o,
+  output logic [31:0]  xmem_req_wstrb_o,
+  input  logic         xmem_rsp_valid_i,
+  input  logic [255:0] xmem_rsp_rdata_i,
+  input  logic         xmem_rsp_err_i
 );
 
   soc_top #(
     .NUM_P     (2),
     .NUM_E     (2),
     .RVFI      (1'b0),
-    .SRAM_SIZE (32'h0001_0000)
+    .EXT_MEM   (1'b1)
   ) u_soc (
     .clk_i           (clk_i),
     .rst_ni          (rst_ni),
@@ -39,6 +53,15 @@ module soc_top_pd (
     .tbm_rsp_ready_i ('1),
     .tbm_rsp_rdata_o (),
     .tbm_rsp_err_o   (),
+    .xmem_req_valid_o(xmem_req_valid_o),
+    .xmem_req_ready_i(xmem_req_ready_i),
+    .xmem_req_addr_o (xmem_req_addr_o),
+    .xmem_req_write_o(xmem_req_write_o),
+    .xmem_req_wdata_o(xmem_req_wdata_o),
+    .xmem_req_wstrb_o(xmem_req_wstrb_o),
+    .xmem_rsp_valid_i(xmem_rsp_valid_i),
+    .xmem_rsp_rdata_i(xmem_rsp_rdata_i),
+    .xmem_rsp_err_i  (xmem_rsp_err_i),
     .mem_stall_i     (1'b0),
     .uart_tx_valid_o (uart_tx_valid_o),
     .uart_tx_byte_o  (uart_tx_byte_o),

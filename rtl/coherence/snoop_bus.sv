@@ -30,9 +30,9 @@
 // ---------------------------------------------------------------------------
 //
 //   B_IDLE    round-robin grant; latch the request
-//   B_LOOKUP  start reading the line's set out of the L2's data SRAM
+//   B_LOOKUP  start reading the line's set out of the L2's tag and data SRAMs
 //     uncached: straight to memory (B_MEM)
-//   B_LDATA   the data has arrived: look the line up in the L2
+//   B_LDATA   the tags and data have arrived: look the line up in the L2
 //     hit:    snoop the sharers other than the requester if there are any
 //             (B_SNOOP, B_SDATA), then act (B_ACT)
 //     miss:   evict the victim way: back-invalidate its sharers (B_BINV,
@@ -153,6 +153,7 @@ module snoop_bus
 
   logic [1:0]            way_q;       // L2 way of the line (hit) or victim (miss)
   logic [N-1:0]          sharers_q;   // the line's sharers, at lookup
+  logic                  ldirty_q;    // the L2's copy is dirty, at lookup
   logic                  vvalid_q;    // a victim is being evicted
   logic [31:0]           vaddr_q;
   logic [N-1:0]          vsharers_q;
@@ -179,7 +180,7 @@ module snoop_bus
   logic                 lk_hit, lk_dirty, vc_valid, vc_dirty;
   logic [1:0]           lk_way, vc_way;
   logic [N-1:0]         lk_sharers, vc_sharers;
-  logic [LINE_BITS-1:0] lk_rdata, vc_data;    // valid in B_LDATA
+  logic [LINE_BITS-1:0] lk_rdata, vc_data;    // all lk_/vc_ valid in B_LDATA only
   logic [31:0]          vc_addr;
   logic                 l2_rd;
 
@@ -400,7 +401,7 @@ module snoop_bus
         rdata_o     = base;
         l2_we       = 1'b1;
         l2_touch    = 1'b1;
-        l2_wdirty   = lk_dirty | dirty_q;
+        l2_wdirty   = ldirty_q | dirty_q;
         l2_wdata_en = dirty_q;
         l2_wdata    = line_q;
         unique case (cmd_q)
@@ -467,6 +468,7 @@ module snoop_bus
       rr_q       <= '0;
       way_q      <= '0;
       sharers_q  <= '0;
+      ldirty_q   <= 1'b0;
       vvalid_q   <= 1'b0;
       vaddr_q    <= '0;
       vsharers_q <= '0;
@@ -495,6 +497,7 @@ module snoop_bus
           if (lk_hit) begin
             way_q     <= lk_way;
             sharers_q <= lk_sharers;
+            ldirty_q  <= lk_dirty;
             lk_data   <= lk_rdata;
           end else begin
             way_q      <= vc_way;

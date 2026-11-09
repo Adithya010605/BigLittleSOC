@@ -25,13 +25,20 @@
 // QoS-arbitrated crossbar with four masters and four slaves:
 //
 //   masters                         slaves
-//   0  the CPU cluster (the L2)     0  SRAM, 192 KB        0x0000_0000
+//   0  the CPU cluster (the L2)     0  main memory, 192 KB 0x0000_0000
 //   1  debug / loader   (testbench) 1  UART                0x1000_0000
 //   2  traffic port A   (testbench) 2  interrupt control   0x1100_0000
 //   3  traffic port B   (testbench) 3  system control      0x1200_0000
 //                                      (QoS registers, performance counters)
 //                                   4  PMU: power          0x4000_0000
 //                                   5  PMU: migration      0x5000_0000
+//
+// Main memory is on chip in simulation: SRAM_SIZE bytes of SRAM
+// (rtl/periph/sram_ctrl.sv). With EXT_MEM the SoC has no main memory of its
+// own, as a real SoC keeps its DRAM off chip: slave 0's port is brought out
+// (xmem_*) for a memory outside the chip, and the memory map is unchanged.
+// A production chip would put a DRAM controller and its PHY on that port;
+// here it is the interconnect's own line-wide request/response port.
 //
 // Masters 1-3 are brought out: the testbench loads programs through the
 // debug port while the CPUs are held in reset (cpu_rst_ni), and drives the
@@ -52,6 +59,7 @@ module soc_top
   parameter int unsigned NUM_E = 2,
   parameter bit          RVFI  = 1'b0,
   parameter int unsigned SRAM_SIZE = 32'h0003_0000,   // bytes
+  parameter bit          EXT_MEM   = 1'b0,            // main memory off chip
   localparam int unsigned N     = NUM_P + NUM_E,
   localparam int unsigned NL1   = 2 * N,
   localparam int unsigned MID_W = (NL1 > 1) ? $clog2(NL1) : 1
@@ -71,6 +79,17 @@ module soc_top
   input  logic [2:0]                   tbm_rsp_ready_i,
   output logic [2:0][LINE_BITS-1:0]    tbm_rsp_rdata_o,
   output logic [2:0]                   tbm_rsp_err_o,
+
+  // ---- Off-chip main memory (EXT_MEM only; unused otherwise) ----
+  output logic                         xmem_req_valid_o,
+  input  logic                         xmem_req_ready_i,
+  output logic [31:0]                  xmem_req_addr_o,
+  output logic                         xmem_req_write_o,
+  output logic [LINE_BITS-1:0]         xmem_req_wdata_o,
+  output logic [LINE_BYTES-1:0]        xmem_req_wstrb_o,
+  input  logic                         xmem_rsp_valid_i,
+  input  logic [LINE_BITS-1:0]         xmem_rsp_rdata_i,
+  input  logic                         xmem_rsp_err_i,
 
   // ---- Peripherals ----
   input  logic                         mem_stall_i,  // SRAM latency injection
@@ -484,12 +503,39 @@ module soc_top
       .rsp_rdata_o   (s_rsp_rdata[j]),        \
       .rsp_err_o     (s_rsp_err[j])
 
-  sram_ctrl #(.SIZE(SRAM_SIZE)) u_sram (
-    `SOC_SLAVE_PORTS(0),
-    .stall_i      (mem_stall_i),
-    .dbg_addr_i   (dbg_addr_i),
-    .dbg_line_o   (dbg_sram_line_o)
-  );
+  if (EXT_MEM) begin : g_xmem
+    // Main memory off chip: slave 0 is the chip's memory port.
+    assign xmem_req_valid_o = s_req_valid[0];
+    assign s_req_ready[0]   = xmem_req_ready_i;
+    assign xmem_req_addr_o  = s_req_addr[0];
+    assign xmem_req_write_o = s_req_write[0];
+    assign xmem_req_wdata_o = s_req_wdata[0];
+    assign xmem_req_wstrb_o = s_req_wstrb[0];
+    assign s_rsp_valid[0]   = xmem_rsp_valid_i;
+    assign s_rsp_rdata[0]   = xmem_rsp_rdata_i;
+    assign s_rsp_err[0]     = xmem_rsp_err_i;
+    assign dbg_sram_line_o  = '0;
+
+    logic unused_xmem;
+    assign unused_xmem = mem_stall_i;
+  end else begin : g_sram
+    sram_ctrl #(.SIZE(SRAM_SIZE)) u_sram (
+      `SOC_SLAVE_PORTS(0),
+      .stall_i      (mem_stall_i),
+      .dbg_addr_i   (dbg_addr_i),
+      .dbg_line_o   (dbg_sram_line_o)
+    );
+
+    assign xmem_req_valid_o = 1'b0;
+    assign xmem_req_addr_o  = '0;
+    assign xmem_req_write_o = 1'b0;
+    assign xmem_req_wdata_o = '0;
+    assign xmem_req_wstrb_o = '0;
+
+    logic unused_xmem;
+    assign unused_xmem = ^{xmem_req_ready_i, xmem_rsp_valid_i, xmem_rsp_rdata_i,
+                           xmem_rsp_err_i};
+  end
 
   uart u_uart (
     `SOC_SLAVE_PORTS(1),

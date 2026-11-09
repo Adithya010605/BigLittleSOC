@@ -975,6 +975,25 @@ Run: `VARIANT=final_1500_lvt scripts/pd_final.sh e_tile` (about 20 minutes).
 **So:** both tiles now close at 1500 ps (667 MHz), fast corner: P-tile
 +11 ps, E-tile +34 ps. Next is the top level (`soc_top_pd`).
 
+### 19. RTL for the top level: L2 tags in SRAM, main memory off chip (2026-11-09)
+
+| Change | Why |
+|---|---|
+| **L2 tag store in SRAM** (`l2_cache.sv`): each way has a tag SRAM (dirty, 8 sharer bits, 18-bit tag = 27 bits, 512 deep) next to its data SRAM. Valid bits (2,048) and pseudo-LRU (1,536) stay in flip-flops. | The tags, dirty and sharer bits were about 57,000 flip-flops, the same problem the L1 tags had. Now about 3,600. Valid bits stay in flops so reset still empties the L2 in one cycle (an SRAM would need a sweep of all 512 sets). |
+| **No added latency.** `B_LOOKUP` already read the data SRAMs a cycle before `B_LDATA` used them; the tag SRAMs are read in the same cycle. The only bus change: the L2 line's dirty bit is registered at lookup (`ldirty_q`), because `B_ACT` used it after the SRAM's read data is gone. | |
+| **Main memory off chip** (`soc_top.sv`: parameter `EXT_MEM`; `soc_top_pd.sv` sets it): no RAM on the chip; the crossbar's slave-0 port is the chip's memory interface, `xmem_*` (32-bit address, 256-bit data each way, 32 byte strobes: 581 pins). | A real SoC keeps DRAM off chip. The 64 KB RAM would have been 8 more 256x256 macros on the die for a stand-in. A production chip would put a DRAM controller and PHY on this port. Simulation keeps `sram_ctrl` (`EXT_MEM = 0`), so every testbench is unchanged. |
+| `lint.sh` also lints `soc_top_pd` (the `EXT_MEM` branch) | |
+
+L2 macros now: per way, 2 x `fakeram7_256x256` (data) + 2 x `fakeram7_256x32`
+(tags) (512 deep = 2 banks): **16 SRAM macros** at the top level.
+
+**Checks:** lint clean (all 9 configurations); unit: the 3 coherence
+testbenches pass; `soc-tests` 20/20 (`mc_l2_thrash`: 226,202 loads checked);
+cached suites pass except `add_demo`. Failing before this change too (checked
+at `a733cc9`): `add_demo` (both cores), and unit `p_core_bpu` (BTB 64 -> 16,
+section 14) and `p_core_mul` (6-cycle multiplier, section 15), whose
+testbenches were not updated with the RTL.
+
 ---
 
 ## Open items
@@ -983,10 +1002,10 @@ Run: `VARIANT=final_1500_lvt scripts/pd_final.sh e_tile` (about 20 minutes).
 |---|---|---|
 | Slew violations in the P-tile final: 15 (worst 339 vs 320 ps, partly the reset tree); the E-tile's are gone (section 18) | Small, but the macros should be electrically clean | With the next P-tile re-run |
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
-| `add_demo` fails on the cached E-core; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
+| Unit `p_core_bpu`, `p_core_mul` fail: testbenches not updated for the 16-entry BTB and 6-cycle multiplier (section 19) | `make unit` isn't green | Update the two testbenches |
+| `add_demo` fails on both cached cores; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
 | P-tile detailed routing needs more than about 10 GB (run 1 stopped at 30%) | The machine has 15 GB, about 4 GB in use by everything else | Next P-tile run: fewer routing threads, and/or a smaller design |
 | P-tile `retire_o` output path (−266 ps in run 4) | Now the P-tile's worst path: L1D → hit → retire → PMU pin, under the 40% output budget | Check the real budget at the top level |
 | Only the fast (FF) corner checked (ORFS ASAP7 default) | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
-| L2 tags and sharer bits in flip-flops (about 57,000) | Same memory and size problem as the L1 tags, at the top level | Before the top-level layout |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
 | No reset synchroniser | Reset-release timing isn't checked; a production chip would add one | Documented limitation |

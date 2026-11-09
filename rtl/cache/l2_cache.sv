@@ -11,16 +11,21 @@
 // coherence transaction: a fill must first evict a victim and invalidate its
 // L1 copies (inclusion), and a hit decides which L1s to snoop.
 //
-// Tags, valid, dirty, sharer bits and the pseudo-LRU state are flip-flops;
-// the line data is a single-port SRAM per way (sram_sp.sv).
+// Two single-port SRAMs per way (sram_sp.sv): a tag store (tag, dirty and
+// sharer bits) and a data store (the line). Only the valid bits and the
+// pseudo-LRU state are flip-flops: the valid bits so that reset empties the
+// cache in one cycle, as a cleared array would need a sweep of every set.
+// (With the tags in flip-flops the L2 was about 57,000 of them; now it is
+// about 3,600.)
 //
 // Ports:
-//   lookup  combinational: does the L2 hold lk_addr_i's line, in which way,
-//           with which sharers, dirty or not. Also the victim way for that
-//           set (an invalid way first, else pseudo-LRU) and everything about
-//           the line in it. The two lines' data (lk_data_o, vc_data_o) come
-//           from the data SRAM: rd_en_i reads lk_addr_i's set, and the data
-//           is there in the next cycle, for the same lk_addr_i.
+//   lookup  rd_en_i reads lk_addr_i's set out of every way's tag and data
+//           SRAM. In the NEXT cycle, for the same lk_addr_i, the outputs say
+//           whether the L2 holds the line, in which way, with which sharers,
+//           dirty or not, and its data; and the victim way for that set (an
+//           invalid way first, else pseudo-LRU) with everything about the
+//           line in it. In any other cycle they are not valid (the SRAMs'
+//           read data lasts one cycle), so the user keeps what it needs.
 //   write   one write per cycle: tag/valid/dirty/sharers of one way, and
 //           optionally its data; optionally marks the way most recently used.
 //   probe   a third lookup for the testbench's invariant checks.
@@ -85,14 +90,21 @@ module l2_cache
   `define L2_IDX(a) a[OFFSET_W +: IDX_W]
   `define L2_TAG(a) a[31 -: TAG_W]
 
-  tag_t                 tag_q     [WAYS][SETS];
+  // One tag-store word per way and set
+  typedef struct packed {
+    logic          dirty;
+    logic [NC-1:0] sharers;
+    tag_t          tag;
+  } meta_t;
+  localparam int unsigned META_W = $bits(meta_t);
+
   logic                 valid_q   [WAYS][SETS];
-  logic                 dirty_q   [WAYS][SETS];
-  logic [NC-1:0]        sharers_q [WAYS][SETS];
   logic [2:0]           plru_q    [SETS];
 
-  logic [WAYS-1:0][LINE_BITS-1:0] rd_line;    // valid the cycle after rd_en_i
-  logic [WAYS-1:0][LINE_BITS-1:0] dbg_line;
+  meta_t [WAYS-1:0]               rd_meta;    // valid the cycle after rd_en_i
+  logic  [WAYS-1:0][LINE_BITS-1:0] rd_line;   // likewise
+  meta_t [WAYS-1:0]               dbg_meta;
+  logic  [WAYS-1:0][LINE_BITS-1:0] dbg_line;
 
   // --------------------------------------------------------------------
   // Lookup and victim
@@ -100,14 +112,14 @@ module l2_cache
   idx_t       l_idx;
   logic       l_inv_found;
   logic [1:0] l_inv_way;
+  assign l_idx = `L2_IDX(lk_addr_i);
   always_comb begin
-    l_idx       = `L2_IDX(lk_addr_i);
     lk_hit_o    = 1'b0;
     lk_way_o    = '0;
     l_inv_found = 1'b0;
     l_inv_way   = '0;
     for (int w = 0; w < int'(WAYS); w++) begin
-      if (valid_q[w][l_idx] && tag_q[w][l_idx] == `L2_TAG(lk_addr_i)) begin
+      if (valid_q[w][l_idx] && rd_meta[w].tag == `L2_TAG(lk_addr_i)) begin
         lk_hit_o = 1'b1;
         lk_way_o = 2'(w);
       end
@@ -117,15 +129,15 @@ module l2_cache
       end
     end
   end
-  assign lk_sharers_o = sharers_q[lk_way_o][l_idx];
-  assign lk_dirty_o   = dirty_q[lk_way_o][l_idx];
+  assign lk_sharers_o = rd_meta[lk_way_o].sharers;
+  assign lk_dirty_o   = rd_meta[lk_way_o].dirty;
   assign lk_data_o    = rd_line[lk_way_o];
 
   assign vc_way_o     = l_inv_found ? l_inv_way : plru4_victim(plru_q[l_idx]);
   assign vc_valid_o   = valid_q[vc_way_o][l_idx];
-  assign vc_dirty_o   = dirty_q[vc_way_o][l_idx];
-  assign vc_addr_o    = {tag_q[vc_way_o][l_idx], l_idx, OFFSET_W'(0)};
-  assign vc_sharers_o = sharers_q[vc_way_o][l_idx];
+  assign vc_dirty_o   = rd_meta[vc_way_o].dirty;
+  assign vc_addr_o    = {rd_meta[vc_way_o].tag, l_idx, OFFSET_W'(0)};
+  assign vc_sharers_o = rd_meta[vc_way_o].sharers;
   assign vc_data_o    = rd_line[vc_way_o];
 
   // --------------------------------------------------------------------
@@ -133,19 +145,19 @@ module l2_cache
   // --------------------------------------------------------------------
   idx_t       d_idx;
   logic [1:0] d_way;
+  assign d_idx = `L2_IDX(dbg_addr_i);
   always_comb begin
-    d_idx         = `L2_IDX(dbg_addr_i);
     dbg_present_o = 1'b0;
     d_way         = '0;
     for (int w = 0; w < int'(WAYS); w++) begin
-      if (valid_q[w][d_idx] && tag_q[w][d_idx] == `L2_TAG(dbg_addr_i)) begin
+      if (valid_q[w][d_idx] && dbg_meta[w].tag == `L2_TAG(dbg_addr_i)) begin
         dbg_present_o = 1'b1;
         d_way         = 2'(w);
       end
     end
   end
-  assign dbg_dirty_o   = dirty_q[d_way][d_idx];
-  assign dbg_sharers_o = sharers_q[d_way][d_idx];
+  assign dbg_dirty_o   = dbg_meta[d_way].dirty;
+  assign dbg_sharers_o = dbg_meta[d_way].sharers;
   assign dbg_data_o    = dbg_line[d_way];
 
   // --------------------------------------------------------------------
@@ -166,29 +178,41 @@ module l2_cache
     end
   end
 
-  always_ff @(posedge clk_i) begin
-    if (wr_en_i) begin
-      tag_q[wr_way_i][w_idx]     <= `L2_TAG(wr_addr_i);
-      dirty_q[wr_way_i][w_idx]   <= wr_dirty_i;
-      sharers_q[wr_way_i][w_idx] <= wr_sharers_i;
-    end
-  end
+  // --------------------------------------------------------------------
+  // Tag and data SRAMs, one of each per way. A write writes its way's tag
+  // word, and its line if wr_data_en_i; a read reads every way's at
+  // lk_addr_i's set. The bus never does both in one cycle.
+  // --------------------------------------------------------------------
+  meta_t w_meta;
+  assign w_meta = '{dirty: wr_dirty_i, sharers: wr_sharers_i, tag: `L2_TAG(wr_addr_i)};
 
-  // --------------------------------------------------------------------
-  // Data SRAM, one per way: a line write uses its way's SRAM; a read reads
-  // every way's at lk_addr_i's set. The bus never does both in one cycle.
-  // --------------------------------------------------------------------
-  for (genvar w = 0; w < int'(WAYS); w++) begin : g_data
-    logic wr_this;
-    assign wr_this = wr_en_i && wr_data_en_i && wr_way_i == 2'(w);
+  for (genvar w = 0; w < int'(WAYS); w++) begin : g_way
+    logic wr_meta, wr_line;
+    assign wr_meta = wr_en_i && wr_way_i == 2'(w);
+    assign wr_line = wr_meta && wr_data_en_i;
+
+    sram_sp #(
+      .DEPTH (SETS),
+      .WIDTH (META_W)
+    ) u_tag (
+      .clk_i       (clk_i),
+      .ce_i        (wr_meta || rd_en_i),
+      .we_i        (wr_meta),
+      .addr_i      (wr_meta ? w_idx : l_idx),
+      .wdata_i     (w_meta),
+      .rdata_o     (rd_meta[w]),
+      .dbg_addr_i  (d_idx),
+      .dbg_rdata_o (dbg_meta[w])
+    );
+
     sram_sp #(
       .DEPTH (SETS),
       .WIDTH (LINE_BITS)
     ) u_data (
       .clk_i       (clk_i),
-      .ce_i        (wr_this || rd_en_i),
-      .we_i        (wr_this),
-      .addr_i      (wr_this ? w_idx : l_idx),
+      .ce_i        (wr_line || rd_en_i),
+      .we_i        (wr_line),
+      .addr_i      (wr_line ? w_idx : l_idx),
       .wdata_i     (wr_data_i),
       .rdata_o     (rd_line[w]),
       .dbg_addr_i  (d_idx),
@@ -198,8 +222,8 @@ module l2_cache
 
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
-    assert (!(rd_en_i && wr_en_i && wr_data_en_i))
-      else $error("l2_cache: read and write of the data SRAM in one cycle");
+    assert (!(rd_en_i && wr_en_i))
+      else $error("l2_cache: read and write of the SRAMs in one cycle");
   end
 `endif
 

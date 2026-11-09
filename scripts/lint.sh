@@ -13,6 +13,8 @@
 # linted as a design of its own, in the 2P+2E configuration and in the two
 # one-core configurations the cached regressions use, so every generate
 # branch is elaborated.
+# The chip top for physical design (soc_top_pd: 2P+2E, main memory off chip)
+# is linted too.
 #
 #   lint.sh            both cores and the SoC
 #   CORE=p_core lint.sh   one core
@@ -56,5 +58,13 @@ if [ "$LINT_SOC" = 1 ]; then
       rc=1
     fi
   done
+  echo "==> lint: soc_top_pd (2P+2E, EXT_MEM), ${#FILES[@]} file(s)"
+  if "$VERILATOR" --lint-only -Wall "${CORE_INC[@]}" --top-module soc_top_pd \
+       "${FILES[@]}"; then
+    echo "    lint clean (0 warnings)"
+  else
+    echo "    LINT FAILED"
+    rc=1
+  fi
 fi
 exit $rc
