@@ -201,6 +201,26 @@ make soc-test       # all three: the SoC's gate
 `build/soc_2p2e_sim --elf=PROG.elf --stats` runs any multi-core program and
 prints per-cache, L2, bus, interconnect and per-core clock statistics.
 
+### 1.3 Physical design: the SoC laid out on ASAP7
+
+On branch `gds_flow`, the 2P+2E SoC is taken to a routed GDS on the ASAP7
+7 nm predictive process with OpenROAD-flow-scripts, hierarchically: the P-tile
+and E-tile (a core with its L1s and clock gates) are laid out once each and
+placed twice in the chip. The whole story, run by run, with every picture:
+[`pd/README.md`](pd/README.md).
+
+<p align="center">
+  <img src="pd/results/chip/run4_1650/final_all.webp" width="480" alt="The routed 2P+2E chip">
+</p>
+
+| | Result (ASAP7 fast corner) |
+|---|---|
+| Chip | 577 × 540 µm; P-tiles top, E-tiles bottom, 16 L2 SRAMs between the P-tiles, bus and L2 logic in the middle band |
+| Clock | **606 MHz (1650 ps): met, +23.5 ps**, hold clean, 0 DRC |
+| Tiles | both **met at 667 MHz (1500 ps)**: E-tile 145 × 145 µm, 14.7 mW; P-tile 162 × 275 µm, 28.8 mW |
+| Power | about 136 mW (chip level 49 mW + tiles 87 mW) |
+| Clock gating | stopping a core's clock saves 43–45% of its tile's power, a whole cluster 93–94%; 7–21% of the tiles' power on the SoC test programs |
+
 ---
 
 ## 2. The E-Core at a glance
@@ -268,6 +288,7 @@ BigLittleSOC/
 │
 ├── scripts/                         build and regression drivers called by the Makefile
 ├── syn/                             Yosys synthesis scripts, one per core
+├── pd/                              physical design on ASAP7 (gds_flow branch): ORFS configs, tile macros, results
 └── docs/                            microarchitecture, verification plan, results, lab notebook, test logs
 ```
 
@@ -626,6 +647,7 @@ Then, by topic:
 | [`docs/p_core_microarchitecture.md`](docs/p_core_microarchitecture.md), [`docs/p_core_verification_plan.md`](docs/p_core_verification_plan.md), [`docs/p_core_results.md`](docs/p_core_results.md) | the P-Core's design, verification and results |
 | [`docs/memory_system.md`](docs/memory_system.md) | the caches, MSI coherence, the L2 and snoop filter, the interconnect, peripherals, their verification |
 | [`docs/power_migration.md`](docs/power_migration.md) | the PMU: task migration, sleep and wake, clock gating, DVFS stub, power domains, register map, verification |
+| [`pd/README.md`](pd/README.md) | the physical design on ASAP7: every run, the final tiles and chip, timing, power, clock gating |
 | [`docs/logs/`](docs/logs/) | saved `make test` logs the results documents cite |
 
 Presentation material (slide decks, talking points) is kept out of the

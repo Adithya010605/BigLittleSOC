@@ -20,7 +20,103 @@ something or a decision is made.
 |---|---|---|---|---|
 | E-tile | ✓ done (GDS, timing not met at 1000 ps) | ✓ done: runs 2–4 (best: run 4, 741 MHz estimate, all electrical checks clean) | ✓ done: 1300–1500 ps, 714 MHz (section 10); without test ports, 1400 ps fails by 140 ps from synthesis noise (section 12) | ✓ **final at 1500 ps (667 MHz) with low-Vt: met, +34 ps**, 0 DRC, 0 slew; macro in `pd/macros/e_tile/` (section 18; RVT-only run −61 ps, section 17) |
 | P-tile | — (hand floorplan from the start) | runs 1–2 out of memory in routing; run 3 (BTB 16) complete: 0 DRC, ~615 MHz estimate (sections 13–14); **run 4 is the main P-tile**: multiplier RTL + low-Vt, 0 DRC (section 15); run 5 (tags on edge) an experiment (section 16) | ✓ done: 1300–1500 ps, ~700–720 MHz estimate, none met (section 17) | ✓ **final at 1500 ps (667 MHz): met, +11 ps**, 0 DRC, 15 slew; macro in `pd/macros/p_tile/` (section 17) |
-| Top (`soc_top_pd`) | ✓ run 1 at 1500 ps: GDS, 0 DRC, **−40 ps** on tile → bus paths (section 20) | ✓ run 2 at 1650 ps (606 MHz): GDS, 0 DRC, **−2.3 ps**, 1 endpoint: reset recovery (section 20) | run 3 at 1650 ps: reset synchroniser, L2 split by bank, right-hand tiles mirrored (section 21), **pending** | — |
+| Top (`soc_top_pd`) | ✓ run 1 at 1500 ps: GDS, 0 DRC, **−40 ps** on tile → bus paths (section 20) | ✓ run 2 at 1650 ps (606 MHz): GDS, 0 DRC, **−2.3 ps**, 1 endpoint: reset recovery (section 20) | run 3 (L2 split by bank) diverged in global placement; ✓ **run 4 at 1650 ps (606 MHz): met, +23.5 ps**, 0 DRC, hold clean (section 22) | ✓ **final GDS: chip run 4** (`run4_1650`); clock gates checked in the layout (section 23) |
+
+---
+
+## Results at a glance
+
+### The final chip: `soc_top_pd`, run 4
+
+<p align="center">
+  <img src="results/chip/run4_1650/final_all.webp" width="560" alt="Chip run 4: routed layout">
+</p>
+
+Die 577 × 540 µm. **P-tiles** in the top corners, **E-tiles** in the bottom
+corners (the light-blue rectangles are the tile macros, routed over on M7–M9).
+The 16 **L2 SRAMs** sit between the P-tiles: the four large ones per row are
+the data arrays, the small ones above them the tags. The **band** through the
+middle holds the snooping bus, L2 controller, crossbar and PMU (the purple
+wiring), and the 581 off-chip memory pins are on the bottom edge between the
+E-tiles. More pictures: [placement](results/chip/run4_1650/final_placement.webp),
+[routing](results/chip/run4_1650/final_routing.webp),
+[congestion](results/chip/run4_1650/final_congestion.webp),
+[clock tree](results/chip/run4_1650/final_clocks.webp),
+[IR drop](results/chip/run4_1650/final_ir_drop.webp),
+[worst path](results/chip/run4_1650/final_worst_path.webp).
+
+| | Chip run 4 |
+|---|---|
+| Clock | **1650 ps (606 MHz)**: setup met, **+23.5 ps** (worst: P-tile 0 → bus `vline_q`), minimum period 1627 ps (615 MHz) |
+| Hold / reset recovery | +26.3 ps / +831 ps: clean |
+| DRC / antenna | **0 / 0** |
+| Slew / cap violations | 142 / 1 (on the long tile ↔ bus data wires; see Open items) |
+| Area | 168,367 µm² of instances, 54% of the core (macros 93% of it) |
+| Routed wire | 2,409 mm |
+| Worst IR drop | 3.4 mV (VDD) |
+| Power | 49.1 mW for the chip level (L2 SRAMs, bus, glue) + 87.0 mW for the four tiles (each tile's own report) = **about 136 mW** |
+| Corner | ASAP7 fast (FF), the ORFS default; not signed off at the slow corner |
+
+### The tiles: first complete layout vs final
+
+<table>
+<tr><th></th><th>First complete layout</th><th>Final (the macro in the chip)</th></tr>
+<tr><td><b>E-tile</b></td>
+<td align="center"><img src="results/e_tile/run1/final_all.webp" width="300" alt="E-tile run 1"><br>run 1: automatic floorplan, 165.5 × 165.5 µm</td>
+<td align="center"><img src="results/e_tile/final/final_all.webp" width="270" alt="E-tile final"><br><code>final_1500_m6</code>: hand floorplan, 145 × 145 µm</td></tr>
+<tr><td><b>P-tile</b></td>
+<td align="center"><img src="results/p_tile/run3/final_all.webp" width="230" alt="P-tile run 3"><br>run 3: first complete P-tile, 162 × 275 µm</td>
+<td align="center"><img src="results/p_tile/final/final_all.webp" width="230" alt="P-tile final"><br><code>final_1500_m6</code>: 162 × 275 µm</td></tr>
+</table>
+
+- **E-tile:** in run 1 the automatic placer left the two data SRAMs in the
+  bottom corners and both tag SRAMs together at the top left, with the logic in
+  a loose cluster and pins on every edge. In the final tile the L1D sits on the
+  west edge and the L1I on the east, each tag SRAM stacked on its own data
+  SRAM with the pins facing the logic in the middle, and the pins are on the
+  top edge and the top of the sides only, facing the chip's bus.
+- **P-tile:** run 3 had pins on all four edges, most of them on the left and
+  right. The final tile has its pins on the top edge
+  and upper sides like the E-tile, and routes only up to M6 so the chip's
+  power grid and wires can use M7 and above.
+
+| | E-tile run 1 | **E-tile final** | P-tile run 3 | **P-tile final** |
+|---|---|---|---|---|
+| Clock target | 1000 ps | **1500 ps** | 1000 ps | **1500 ps** |
+| Setup | −391.6 ps, 954 endpoints | **met, +10.1 ps** | −627 ps, 4,176 endpoints | **reg-to-reg met, +28.9 ps** (only the `retire_o`/`events_o` output budgets fail; met in the chip) |
+| Minimum period (fmax estimate) | 1392 ps (719 MHz) | 1490 ps (671 MHz) | 1627 ps (615 MHz) | 1471 ps (680 MHz) reg-to-reg |
+| Hold | +29.0 ps | +27.4 ps | +18 ps | +2.7 ps |
+| Slew violations | 341 | **0** | 172 | 138 |
+| Die / cell + macro area | 27,390 µm² / 11,280 µm² (42%) | **21,025 µm² (−23%)** / 10,959 µm² (54%) | 44,550 µm² / 22,785 µm² (52%) | 44,550 µm² / 22,316 µm² (51%) |
+| Routed wire | 391 mm | 349 mm | 779 mm | 913 mm |
+| Power | 26.6 mW at 1 GHz | 14.7 mW at 667 MHz | 40.3 mW at 1 GHz | 28.8 mW at 667 MHz |
+| DRC / antenna | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Cells | RVT | RVT + LVT | RVT | RVT + LVT |
+
+What changed between them: hand macro placement and a smaller die (E-tile,
+sections 7–9); the multiplier registered at both ends (P-tile, section 15);
+low-Vt cells (sections 15, 18); test-only ports removed (section 12); pins
+moved to the chip-facing edges and routing capped at M6 (section 20). The
+minimum periods are not a like-for-like speed comparison: the first runs were
+pushed at 1000 ps and had no real I/O, while the finals carry the chip's
+40/60% I/O budgets on their pins. The P-tile's wire grew because its pins are
+on fewer edges and it lost M7.
+
+### Clock gating
+
+Each tile has two clock gates (ASAP7 `ICGx1`): one for the core, one for its
+pair of L1 caches. Both are in the final layouts, their enable timing is met
+by 580+ ps, and the SoC tests show stopped cores really stop clocking.
+Measured on the routed tiles (section 23):
+
+| Tile | Both clocks running | Core gated (sleep, parked) | Core + L1 gated (cluster off) |
+|---|---|---|---|
+| E-tile | 14.7 mW | 8.0 mW (**−45%**) | 0.98 mW (**−93%**) |
+| P-tile | 28.8 mW | 16.5 mW (**−43%**) | 1.86 mW (**−94%**) |
+
+On the SoC test programs, core gating alone saves **7–21% of the tiles'
+power** (5.8–18.1 mW) wherever cores sleep, wait or run divided; a program
+that keeps all four cores busy saves nothing, as it should.
 
 ---
 
@@ -32,7 +128,8 @@ pd/
 ├── asap7/soc_top/        what ORFS reads (committed)
 │   ├── e_tile/           config.mk, constraint.sdc (+ io.tcl, macro_place.tcl in run 2)
 │   ├── p_tile/
-│   └── chip/             soc_top_pd: config.mk, constraint.sdc, io.tcl, macro_place.tcl, pdn.tcl
+│   ├── chip/             soc_top_pd: config.mk, constraint.sdc, io.tcl, macro_place.tcl, pdn.tcl
+│   └── clock_gate_power.tcl  clock-gate timing and power on a finished tile (section 23)
 ├── macros/               the tiles as hard macros: .lef, .lib, .gds.gz (committed)
 ├── results/              numbers and pictures kept from runs (committed)
 └── orfs/                 raw ORFS runs: databases, GDS, logs (git-ignored)
@@ -1086,7 +1183,110 @@ pins face the band, a bank row would be 4 x 84 = 336 µm wide, more than the
 223 µm between the P-tiles.
 
 **Checks:** lint clean (all configurations). Run 3: `FLOW_VARIANT=run3_1650`,
-1650 ps, all three changes together, **pending**.
+1650 ps, all three changes together.
+
+### 22. Chip runs 3 and 4: the L2 back between the P-tiles, timing met at 1650 ps (2026-11-10)
+
+**Run 3 failed in global placement.** With bank 1 of the L2 between the
+E-tiles, the SRAMs sat over the area that drives the 581 `xmem_*` pins on the
+bottom edge, and the cells for those pins had only the narrow channels between
+the SRAMs. The placer's routability inflation grew to +83% (run 2: +37%) and
+then it diverged (`GPL-0305`, invalid step length) at 3_3_place_gp. No layout.
+
+**Run 4** (`FLOW_VARIANT=run4_1650`, 1650 ps) keeps two of run 3's three
+changes, the reset synchroniser and the mirrored right-hand tiles, and puts
+the L2 back where run 2 had it: all 16 SRAMs between the P-tiles, one column
+per way, the two data banks next to the band (y 250 and 339) and both tag
+banks above them (y 428 and 475). The area between the E-tiles is left to the
+logic for the memory pins (`macro_place.tcl`).
+
+| | Run 2 (1650 ps) | **Run 4 (1650 ps)** |
+|---|---|---|
+| Setup WNS / TNS | −2.3 ps / −2.3 ps, 1 endpoint | **+23.5 ps / 0** |
+| Worst path | `rst_ni` → L2 `valid_q` reset (recovery) | P-tile 0 → bus `vline_q[253]` |
+| Reset recovery / removal | −2.3 ps / – | **+831 ps / +202 ps** (from `rst_sync_q`) |
+| Hold WNS | +28.4 ps | +26.3 ps (165 hold buffers for 42 endpoints) |
+| Minimum period (fmax estimate) | 1652 ps (605 MHz) | 1627 ps (615 MHz) |
+| Slew / cap violations | 184 / 2 | 142 / 1 |
+| DRC, antenna | 0, 0 | 0, 0 (2 violations left after the first routing passes, fixed by the last) |
+| Power (leakage), chip level only | 46.4 mW (2.1 mW) | 49.1 mW (2.1 mW) |
+| Worst IR drop (VDD) | 3.4 mV | 3.4 mV |
+| Routed wire | 2,430 mm | 2,409 mm |
+| Placement routability inflation | +37% | +50% |
+| Detailed routing | 62 min, 14.0 GB | 61 min, 13.3 GB; whole flow 1 h 48 min |
+
+- **The reset synchroniser fixed run 2's failure:** reset is now released
+  from a flop on a clock edge and has nearly the whole cycle (+831 ps).
+- **Every tile and bus path meets timing.** The worst path is the one that
+  failed run 1 at 1500 ps (a tile output into the bus's line register), now
+  with 23.5 ps to spare at 1650 ps.
+- **The chip-level power doesn't include the tiles:** the tile `.lib`s are
+  timing models with no power data. The tiles' own reports add 2 × 28.8 +
+  2 × 14.7 = 87.0 mW, about 136 mW in all. The chip level's +2.7 mW over run 2
+  is switching power (5.0 → 6.8 mW), likely the hold buffers and the longer
+  wires to the stacked SRAMs; not checked further.
+- **The slew violations** are on data wires between the tiles and the bus,
+  for example `snoop_data[491]` into an `AO221` (510 ps against a 320 ps
+  limit) and a chain of placement buffers on `bus_wdata[198]` (about 410 ps).
+  Timing analysis includes these slow edges, so the slack above accounts for
+  them, but they lie outside the range the cell tables cover, so their delays
+  are extrapolated. Kept as an open item.
+- **Run 4 is the final chip.** Pictures: `results/chip/run4_1650/`, and the
+  summary at the top of this file. Logs: `pd/asap7/soc_top/chip/run3_1650.log`,
+  `run4_1650.log` (local, not committed, like earlier runs).
+
+### 23. Clock gates: checked in the layout, power measured (2026-11-10)
+
+Each tile has two clock gates (`rtl/power/clock_gate.sv`, ASAP7
+`ICGx1_ASAP7_75t_R`): `u_cg.u_icg` gives the core its clock, `u_l1.u_cg.u_icg`
+the L1 pair's controllers and SRAMs. The PMU turns off a core's clock when it
+has halted to sleep or park, and both when its cluster is powered down
+(`docs/power_migration.md`, section 4).
+
+**Do they work?**
+
+| Check | Result |
+|---|---|
+| In the final layouts | Both gates present in both tiles' `final_1500_m6` netlists, `SE` tied low, each driving its own clock tree (`clknet_*_core_clk` to the core's flops) |
+| Enable timing (the enable must settle while the clock is low) | E-tile core / L1 gate: setup +891 / +880 ps, hold +587 / +603 ps. P-tile: setup +866 / +826 ps, hold +604 / +643 ps |
+| In simulation (`scripts/run_soc.sh`, one latency setting): all 17 SoC programs pass | Stopped cores really stop: in `mc_sleep` E-core 2 is clocked 619 of 7,162 cycles; in `mc_migrate` E-core 2 is clocked 13,603 of 328,151 (it parks after its hart migrates); `mc_hello`, which keeps all four busy, clocks every core every cycle |
+
+**Power saved.** `pd/asap7/soc_top/clock_gate_power.tcl` loads a finished
+tile with its routed parasitics and reports power three times: clocks running,
+the core's gated clock stopped, and both stopped. Stopping a clock is modelled
+by setting the gate output's activity to 0; OpenSTA carries that through the
+clock tree to every flop and SRAM behind it, and through the flops to the
+logic they drive.
+
+| | E-tile | P-tile |
+|---|---|---|
+| Both clocks running | 14.7 mW | 28.8 mW |
+| Core clock gated | 8.0 mW: **−6.7 mW (−45%)** | 16.5 mW: **−12.3 mW (−43%)** |
+| Core and L1 clocks gated | 0.98 mW: **−13.7 mW (−93%)** | 1.86 mW: **−26.9 mW (−94%)** |
+| What is left when both are gated | leakage 0.52 mW (SRAMs 0.52), logic driven by the tile's inputs 0.39 mW | leakage 1.05 mW (SRAMs 1.03), input-driven logic 0.70 mW |
+
+The core's gate saves less than half because the L1s (SRAMs, controllers,
+snoop logic) keep running for the other cores' snoops; their own gate takes
+almost everything else. What it can't remove is leakage, which needs real
+power gating (the PMU's power domains are modelled as state-retention only).
+
+**Saved on real programs:** each core's gated fraction from the SoC tests,
+times its tile's saving with the core gated (L1 gating isn't counted: the
+testbench doesn't report it, so these are lower bounds):
+
+| Program | Cycles gated: P0 / P1 / E0 / E1 | Saved | Of the tiles' 87.0 mW |
+|---|---|---|---|
+| `mc_sleep` | 0 / 44 / 91 / 41% | 14.3 mW | 16.4% |
+| `mc_power` | 55 / 55 / 34 / 34% | 18.1 mW | 20.8% |
+| `mc_dvfs` | 42 / 42 / 34 / 34% | 14.9 mW | 17.1% |
+| `mc_migrate` | 3 / 25 / 96 / 74% | 14.8 mW | 17.0% |
+| `mc_power_stress` | 24 / 24 / 0 / 0% | 5.8 mW | 6.7% |
+| `mc_hello` | 0 / 0 / 0 / 0% | 0 | 0 |
+
+Caveats: vectorless activity (the flow's default, not a simulation trace),
+fast corner, and the running power assumes every flop and SRAM is clocked
+every cycle. The percentages are the reliable part; the milliwatts are
+estimates.
 
 ---
 
@@ -1095,13 +1295,13 @@ pins face the band, a bank row would be 4 x 84 = 336 µm wide, more than the
 | Item | Why it matters | When |
 |---|---|---|
 | Slew violations in the P-tile final: 138 since the M6 re-run (were 15); the E-tile has none (section 20) | The macros should be electrically clean | With the next P-tile re-run |
-| Tile pins on both sides: about 1,370 bus pins still face the die edge after mirroring (section 21) | Their wires go around the tile; likely part of why the chip misses 1500 ps (run 1) | If 1500 ps is the goal: re-run the tiles with pins on the top edge and one side only, then mirror the right-hand tiles |
-| Chip at 1650 ps, not the tiles' 1500 ps (section 20) | 606 MHz instead of 667 MHz | After run 3: decide between 1650 ps and the tile pin re-run |
+| Chip closes at 1650 ps, not the tiles' 1500 ps (sections 20, 22) | 606 MHz instead of 667 MHz; the worst path is still tile → bus `vline_q` | Only if 1500 ps is the goal: re-run the tiles with pins on the top edge and one side only (about 1,370 bus pins still face the die edge, section 21) |
+| Chip slew violations: 142 on the tile ↔ bus data wires, worst 510 ps against 320 ps (section 22) | Timing meets with them, but their delays are extrapolated beyond the cell tables | A repair pass with a tighter slew limit, if the chip is re-run |
 | Debug-port I/O budget (20%) is an assumption | Must hold once the PMU and wires are real | Check at the top level |
 | Unit `p_core_bpu`, `p_core_mul` fail: testbenches not updated for the 16-entry BTB and 6-cycle multiplier (section 19) | `make unit` isn't green | Update the two testbenches |
 | `add_demo` fails on both cached cores; 2 of 50 SoC mutations undetected (`hit_ignores_core_en`, `flush_wb_race_ignored`) | `make test` and `make soc-mutation` aren't green on this branch, since `b0033fe` (section 12) | Before the top level: adjust `add_demo`'s threshold for 2-cycle fetch; restore detection of the two mutations |
 | P-tile detailed routing needs more than about 10 GB (run 1 stopped at 30%) | The machine has 15 GB, about 4 GB in use by everything else | Next P-tile run: fewer routing threads, and/or a smaller design |
-| P-tile `retire_o` output path (−266 ps in run 4, −141 ps in `final_1500_m6`) | The P-tile's worst path: L1D → hit → retire → PMU pin, under the 40% output budget | Met at the top level (chip run 2, section 20); recheck in run 3 |
-| Only the fast (FF) corner checked (ORFS ASAP7 default) | Signoff needs the slow corner (setup) and fast corner (hold) | Before signing off the E-tile |
+| P-tile `retire_o` output path (−266 ps in run 4, −141 ps in `final_1500_m6`) | The P-tile's worst path: L1D → hit → retire → PMU pin, under the 40% output budget | Met at the top level (chip runs 2 and 4, sections 20, 22) |
+| Only the fast (FF) corner checked (ORFS ASAP7 default) | Signoff needs the slow corner (setup) and fast corner (hold) | Before any sign-off claim (tiles and chip) |
 | Cache hits take 2 cycles | About half the performance on cache-resident code | Possible later improvement (pipelined hits) |
-| Reset synchroniser added in `soc_top_pd` (section 21) | Run 2's only failing path | Confirm in chip run 3 |
+| Clock-gate savings are vectorless estimates (section 23) | Real savings depend on switching activity | A power run from a simulation trace (VCD/SAIF) of one SoC program |
